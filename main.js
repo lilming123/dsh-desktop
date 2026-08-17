@@ -7,7 +7,7 @@
  *   3. 应用菜单、桥接服务和生命周期
  *
  * 所有业务逻辑拆到 src/ 下：paths / logger / dsh / install / setup / menu /
- * capabilities / bridge / i18n
+ * capabilities / companion / i18n
  */
 
 'use strict';
@@ -18,13 +18,13 @@ const { log } = require('./src/logger');
 const { buildMenu } = require('./src/menu');
 const { runSetup } = require('./src/setup');
 const { dshUrl } = require('./src/dsh');
-const { getDict, onLangChange, watchDshLocale } = require('./src/i18n');
+const { getDict, onLangChange, watchDshLanguage } = require('./src/i18n');
 const capabilities = require('./src/capabilities');
-const { startBridge } = require('./src/bridge');
+const { startCompanion } = require('./src/companion');
 
 let splashWin = null;
 let mainWin   = null;
-let bridge    = null;
+let companion = null;
 
 // ── 窗口创建 ──────────────────────────────────────────────────────────────────
 
@@ -110,8 +110,8 @@ function createMain(port) {
   // 菜单（Open Folder / 最近工作区都会走 capabilities 统一能力层）
   buildMenu(mainWin, splashWin);
 
-  // dsh 端口/工作区确定后刷新桥接发现文件
-  bridge?.refresh();
+  // dsh 端口/工作区确定后刷新 companion 发现文件
+  companion?.refresh();
   return mainWin;
 }
 
@@ -119,17 +119,17 @@ function createMain(port) {
 
 app.whenReady().then(async () => {
   log('=== DeepSeek Harness Desktop starting ===');
-  watchDshLocale();  // 监听 dsh settings.yaml 变化，自动同步语言
+  watchDshLanguage();  // 通过 dsh-api 插件轮询语言变化，保持菜单/splash 同步
 
-  // 桥接服务：暴露桌面能力给 dsh 插件（每次启动随机 token + 端口）
-  bridge = await startBridge({ api: capabilities }).catch(err => {
-    log('bridge start failed:', err.message);
+  // Companion 服务：把桌面独占能力暴露给 dsh-api 插件（每次启动随机 token + 端口）
+  companion = await startCompanion({ api: capabilities }).catch(err => {
+    log('companion start failed:', err.message);
     return null;
   });
 
-  // 状态变化（工作区切换等）→ 刷新桥接发现文件 + 重建菜单（更新当前工作区显示）
+  // 状态变化（工作区切换等）→ 刷新 companion 发现文件 + 重建菜单
   capabilities.setOnStateChanged(() => {
-    bridge?.refresh();
+    companion?.refresh();
     if (mainWin && !mainWin.isDestroyed()) buildMenu(mainWin, splashWin);
   });
 
@@ -160,6 +160,6 @@ app.on('window-all-closed', () => {
 
 // dsh 进程以 detached + unref 启动，app 退出时自然不影响它
 app.on('before-quit', () => {
-  try { bridge?.stop(); } catch (_) {}
-  bridge = null;
+  try { companion?.stop(); } catch (_) { /* companion already down */ }
+  companion = null;
 });

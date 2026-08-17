@@ -37,13 +37,14 @@
     "addFile": "Add File…",
     "closeWindow": "Close Window",
     "language": "Language",
-    "dsh": "DSH",
-    "currentWorkspace": "Current Workspace",
-    "reloadDsh": "Reload DSH",
+    "switchingWorkspace": "Switching workspace…",
+    "reloadDsh": "Reload dsh UI",
     "showWindow": "Show Window",
-    "openInBrowser": "Open in Browser",
+    "openInBrowser": "Open dsh in Browser",
+    "pluginRepo": "dsh-api Plugin on GitHub",
     "edit": "Edit",
     "view": "View",
-    "window": "Window"
+    "window": "Window",
+    "help": "Help"
   }
 }

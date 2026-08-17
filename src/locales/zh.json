@@ -37,13 +37,14 @@
     "addFile": "添加文件…",
     "closeWindow": "关闭窗口",
     "language": "语言",
-    "dsh": "DSH",
-    "currentWorkspace": "当前工作区",
-    "reloadDsh": "重载 DSH",
+    "switchingWorkspace": "正在切换工作区…",
+    "reloadDsh": "重载 dsh 界面",
     "showWindow": "显示窗口",
-    "openInBrowser": "在浏览器中打开",
+    "openInBrowser": "在浏览器中打开 dsh",
+    "pluginRepo": "dsh-api 插件 GitHub 仓库",
     "edit": "编辑",
     "view": "视图",
-    "window": "窗口"
+    "window": "窗口",
+    "help": "帮助"
   }
 }

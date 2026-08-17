@@ -1,87 +1,96 @@
 /**
- * capabilities.js — 统一能力层（Electron 主进程）
+ * capabilities.js — Unified capability layer (Electron main process).
  *
- * 菜单栏与 HTTP 桥接服务共用同一套能力实现：
- *   - 工作区：对话框选目录 / 按路径打开（重启 dsh 并切换 cwd）
- *   - 文件：多选文件并把路径注入 dsh 输入框
- *   - 语言：优先走 dsh 插件的 settings 服务（POST /desktop-api/language），
- *     插件不可用时回退为直接改写 settings.yaml + reload
- *   - 窗口：显示 / 重载 / 浏览器打开
- *   - 状态：dsh 端口、工作区目录、窗口可见性
+ * Two callers share this module: the menu (`src/menu.js`) and the companion
+ * HTTP service (`src/companion.js`). It offers:
  *
- * 状态由 main.js 通过 setContext() 注入（窗口引用、端口、工作区）。
+ *   - Workspace: pick a directory / open by path (restarts dsh with new cwd)
+ *   - Files:     multi-pick then inject paths into the dsh input
+ *   - Language:  delegated to the dsh-api plugin (POST /dsh-api/language)
+ *   - Window:    show / reload / open in default browser
+ *   - State:     dsh port, workspace dir, window visibility
+ *
+ * The important design rule of this refactor:
+ * **We never touch dsh internals directly.** Language and workspace list live
+ * inside dsh — this module reaches them only through the `dsh-api` plugin over
+ * HTTP. The only knobs here are the Electron-shell things dsh itself cannot
+ * do: file dialogs, spawning / restarting dsh, focusing the window.
+ *
+ * Runtime state (windows, port, workspace) is injected by main.js via
+ * `setContext()`.
  */
 
 'use strict';
 
 const { app, dialog, shell } = require('electron');
 const fs = require('fs');
-const os = require('os');
-const path = require('path');
-const http = require('http');
-const { t, getLang, setLang } = require('./i18n');
+const { t, setLang } = require('./i18n');
 const { switchWorkspace, dshUrl: dshUrlOf } = require('./dsh');
+const pluginClient = require('./pluginClient');
 
-const DSH_SETTINGS = path.join(os.homedir(), '.dsh', 'settings.yaml');
-const LANG_LABELS = { 'en': 'English', 'zh': '简体中文' };
+const LANG_LABELS = { en: 'English', zh: '简体中文' };
 
-// ── 运行时状态（由 main.js 注入） ──────────────────────────────────────────────
+// ── Runtime state (populated by main.js) ─────────────────────────────────────
 
 const state = {
   mainWin: null,      // BrowserWindow
   splashWin: null,    // BrowserWindow | null
-  dshPort: 3080,      // dsh 实际端口
-  workspace: null,    // 当前工作区目录（经本应用打开过的）
+  dshPort: 3080,      // dsh actual listening port
+  workspace: null,    // Current workspace directory (as seen by this app)
 };
 
-/** 注入/更新运行时状态 */
+/** Inject / update runtime state (main.js is the source of truth). */
 function setContext(partial) {
   Object.assign(state, partial);
+  if (partial && typeof partial.dshPort === 'number') pluginClient.setPort(partial.dshPort);
 }
 
-/** 能力层对外状态快照（纯 JSON，供菜单与桥接使用） */
+/** State snapshot (pure JSON) shared with the companion HTTP surface. */
 function getState() {
+  const mainWin = state.mainWin;
   return {
     pid: process.pid,
     dshPort: state.dshPort,
     dshUrl: dshUrlOf(),
     workspace: state.workspace || null,
     cwd: process.cwd(),
-    windowVisible: !!(state.mainWin && !state.mainWin.isDestroyed() && state.mainWin.isVisible()),
+    windowVisible: !!(mainWin && !mainWin.isDestroyed() && mainWin.isVisible()),
     platform: process.platform,
   };
 }
 
-/** 语言切换后的回调（main.js 注册，用于刷新桥接发现文件等） */
+// Callback fired when observable state changes (workspace/port). main.js uses
+// it to refresh the companion discovery file and rebuild the menu.
 let onStateChanged = null;
 function setOnStateChanged(fn) { onStateChanged = fn; }
-function notifyChanged() { try { onStateChanged && onStateChanged(); } catch (_) {} }
+function notifyChanged() { try { onStateChanged && onStateChanged(); } catch (_) { /* swallow */ } }
 
-// ── 工作区 ────────────────────────────────────────────────────────────────────
+// ── Workspace ────────────────────────────────────────────────────────────────
 
-/** 切换到指定目录作为工作区（重启 dsh，进程级 cwd 变更） */
+/** Switch to a directory as the workspace: restart dsh, process cwd changes. */
 async function openWorkspaceAt(dir) {
   if (!state.mainWin || state.mainWin.isDestroyed()) return { ok: false, error: 'no main window' };
 
-  // 1. 显示切换中的占位页
+  // 1. Show a placeholder page while dsh is restarting
   state.mainWin.webContents.loadURL('about:blank');
   state.mainWin.webContents.executeJavaScript(
     `document.body.style.cssText='margin:0;display:flex;align-items:center;justify-content:center;height:100vh;font-family:-apple-system,sans-serif;color:#666;background:#fff';` +
-    `document.body.innerHTML='<div style="text-align:center"><div style="font-size:32px;margin-bottom:12px">🔄</div><div>${t('steps.ready.opening')}</div><div style="font-size:12px;color:#aaa;margin-top:6px">${String(dir).replace(/[<>&"]/g, '')}</div></div>'`
+    `document.body.innerHTML='<div style="text-align:center"><div style="font-size:32px;margin-bottom:12px">🔄</div><div>${t('menu.switchingWorkspace')}</div><div style="font-size:12px;color:#aaa;margin-top:6px">${String(dir).replace(/[<>&"]/g, '')}</div></div>'`
   ).catch(() => {});
 
-  // 2. 重启 dsh（kill 旧的 + 找新端口 + 启动 + 等就绪）
+  // 2. Restart dsh (kill old + pick free port + spawn + wait for ready)
   const newPort = await switchWorkspace(dir);
   state.dshPort = newPort;
   state.workspace = dir;
+  pluginClient.setPort(newPort);
 
-  // 3. 加载新工作区的 UI
+  // 3. Load the new dsh UI
   state.mainWin.webContents.loadURL(dshUrlOf());
   notifyChanged();
   return { ok: true, port: newPort, workspace: dir };
 }
 
-/** 弹出目录选择对话框后打开工作区；取消返回 { ok:false, canceled:true } */
+/** Directory-picker → openWorkspaceAt. Cancel returns `{ ok:false, canceled:true }`. */
 async function openWorkspaceDialog() {
   if (!state.mainWin) return { ok: false, error: 'no main window' };
   const { canceled, filePaths } = await dialog.showOpenDialog(state.mainWin, {
@@ -92,7 +101,7 @@ async function openWorkspaceDialog() {
   return openWorkspaceAt(filePaths[0]);
 }
 
-/** 按路径打开工作区（外部调用方已给定目录） */
+/** Open a workspace by explicit path (caller already has the directory). */
 async function openWorkspaceRequested(dir) {
   if (typeof dir !== 'string' || !dir.length) return openWorkspaceDialog();
   try {
@@ -104,9 +113,9 @@ async function openWorkspaceRequested(dir) {
   return openWorkspaceAt(dir);
 }
 
-// ── 文件 / 输入 ────────────────────────────────────────────────────────────────
+// ── Files / input injection ──────────────────────────────────────────────────
 
-/** 把文本注入到当前激活的输入元素（textarea / contenteditable / input） */
+/** Inject text into whichever input element is currently focused. */
 function pasteToInput(text) {
   if (!state.mainWin?.webContents) return { ok: false, error: 'no main window' };
   state.mainWin.webContents.executeJavaScript(`
@@ -127,7 +136,7 @@ function pasteToInput(text) {
   return { ok: true };
 }
 
-/** 弹出多选文件对话框，把路径注入 dsh 输入框 */
+/** Multi-file picker; join with spaces and paste into the dsh input. */
 async function pickFilesAndInject() {
   if (!state.mainWin) return { ok: false, error: 'no main window' };
   const { canceled, filePaths } = await dialog.showOpenDialog(state.mainWin, {
@@ -139,97 +148,31 @@ async function pickFilesAndInject() {
   return pasteToInput(paths);
 }
 
-// ── 语言 ──────────────────────────────────────────────────────────────────────
+// ── Language ─────────────────────────────────────────────────────────────────
 
 /**
- * 直接修改 dsh 的 settings.yaml 里的 locale.preference（回退路径）。
- * 简单文本替换，避免引入完整 YAML 依赖。
- */
-function writeDshLocalePreference(lang) {
-  try {
-    let text = fs.existsSync(DSH_SETTINGS) ? fs.readFileSync(DSH_SETTINGS, 'utf8') : '';
-    const localeBlock = /^locale:\s*\n\s+preference:\s*['"]?[\w-]+['"]?/m;
-    if (localeBlock.test(text)) {
-      text = text.replace(localeBlock, `locale:\n  preference: ${lang}`);
-    } else {
-      if (text && !text.endsWith('\n')) text += '\n';
-      text += `locale:\n  preference: ${lang}\n`;
-    }
-    fs.writeFileSync(DSH_SETTINGS, text, 'utf8');
-    return true;
-  } catch { return false; }
-}
-
-/** 短超时的 HTTP GET/POST 到 dsh 插件 API；失败返回 null */
-function callPluginApi(port, method, pathname, body, timeoutMs = 2000) {
-  return new Promise((resolve) => {
-    const payload = body === undefined ? null : JSON.stringify(body);
-    const req = http.request({
-      host: '127.0.0.1',
-      port,
-      path: pathname,
-      method,
-      headers: payload !== null
-        ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) }
-        : {},
-      timeout: timeoutMs,
-    }, (res) => {
-      res.resume();
-      resolve({ status: res.statusCode || 0 });
-    });
-    req.on('timeout', () => { req.destroy(); resolve(null); });
-    req.on('error', () => resolve(null));
-    if (payload !== null) req.write(payload);
-    req.end();
-  });
-}
-
-/**
- * 切换界面语言：
- * 1. 本地 i18n 切换（触发菜单重建）
- * 2. 优先走 dsh 插件 API（settings 服务），dsh 客户端自动重渲染
- * 3. 插件不可用（dsh 未起 / 未装插件）→ 直接改 settings.yaml + reload
+ * Switch UI language.
+ * Sync: local i18n switches first so the menu label + splash text update
+ *       immediately (matters when dsh is still starting or was reused
+ *       without the plugin).
+ * Async: the dsh-api plugin does the authoritative write via the `settings`
+ *        service. dsh clients then refresh live. We never touch settings.yaml
+ *        ourselves — that's dsh's own concern.
  */
 async function setLanguage(lang) {
   if (!['en', 'zh'].includes(lang)) return { ok: false, error: 'unsupported language: ' + lang };
-  try { setLang(lang); } catch (_) {}
+  try { setLang(lang); } catch (_) { /* i18n load failure isn't fatal */ }
 
-  const r = await callPluginApi(state.dshPort, 'POST', '/desktop-api/language', { language: lang });
-  if (r && r.status >= 200 && r.status < 300) {
-    return { ok: true, via: 'plugin' };
-  }
-  // 回退：直接写 settings.yaml + reload 主窗口
-  writeDshLocalePreference(lang);
-  if (state.mainWin && !state.mainWin.isDestroyed()) {
-    state.mainWin.webContents.reload();
-  }
-  return { ok: true, via: 'fallback' };
+  const ok = await pluginClient.setLanguage(lang);
+  return { ok: true, applied: ok ? 'plugin' : 'local-only' };
 }
 
-/** 从 dsh 插件 API 拉取工作区列表（菜单“最近工作区”用），失败返回 null */
-async function fetchWorkspaceList(timeoutMs = 1500) {
-  return new Promise((resolve) => {
-    const req = http.get({
-      host: '127.0.0.1',
-      port: state.dshPort,
-      path: '/desktop-api/workspace/list',
-      timeout: timeoutMs,
-    }, (res) => {
-      let buf = '';
-      res.on('data', (c) => { buf += c; });
-      res.on('end', () => {
-        try {
-          const data = JSON.parse(buf);
-          resolve(Array.isArray(data.workspaces) ? data.workspaces : null);
-        } catch { resolve(null); }
-      });
-    });
-    req.on('timeout', () => { req.destroy(); resolve(null); });
-    req.on('error', () => resolve(null));
-  });
+/** Recent-workspaces list for the menu — delegated to the plugin. */
+async function fetchWorkspaceList() {
+  return pluginClient.listWorkspaces();
 }
 
-// ── 窗口 / 应用 ───────────────────────────────────────────────────────────────
+// ── Window / app ─────────────────────────────────────────────────────────────
 
 function showWindow() {
   if (!state.mainWin || state.mainWin.isDestroyed()) return { ok: false, error: 'no main window' };
@@ -251,7 +194,7 @@ function openInBrowser() {
 }
 
 function quitApp() {
-  setImmediate(() => { try { app.quit(); } catch (_) {} });
+  setImmediate(() => { try { app.quit(); } catch (_) { /* app already quitting */ } });
   return { ok: true };
 }
 

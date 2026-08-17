@@ -1,22 +1,23 @@
 /**
- * bridge.js — 桌面桥接 HTTP 服务（Electron 主进程）
+ * companion.js — Host companion HTTP service (Electron main process).
  *
- * 把「只有桌面应用能做到」的能力暴露给 dsh 插件（进而暴露给外部应用）：
+ * The `dsh-api` plugin publishes dsh's own capabilities directly, but some
+ * things only the desktop wrapper can do: pick a folder, restart dsh with a
+ * new cwd, focus the window, quit the app. This file implements the companion
+ * side of the dsh-api companion protocol.
  *
- *   GET  /bridge/state            状态快照
- *   POST /bridge/workspace/open   打开工作区（{ path? }，缺省弹目录对话框）
- *   POST /bridge/input/paste      向 dsh 输入框注入文本（{ text }）
- *   POST /bridge/window/show      显示并聚焦主窗口
- *   POST /bridge/window/reload    重载主窗口
- *   POST /bridge/app/quit         退出应用
+ * Endpoints (all authenticated by `x-dsh-api-companion-token`):
  *
- * 安全：
- *   - 只绑定 127.0.0.1，随机端口（OS 分配）
- *   - 所有请求必须带 x-dsh-bridge-token（每次启动随机生成，
- *     写入 $DSH_HOME/desktop-bridge.json，dsh 插件读取后携带）
+ *   GET  /companion/state             capability-layer state snapshot
+ *   POST /companion/workspace/open    { path? }  — no path ⇒ folder picker
+ *   POST /companion/input/paste       { text }   — inject into dsh UI input
+ *   POST /companion/window/show       show + focus the main window
+ *   POST /companion/window/reload     reload dsh UI in the main window
+ *   POST /companion/app/quit          quit the desktop app
  *
- * 发现文件 desktop-bridge.json: { port, token, dshPort, pid, workspace }
- * 工作区切换 / 端口变化后由 refresh() 或成功处理 /workspace/open 后重写。
+ * Discovery: this service writes `$DSH_HOME/dsh-api-companion.json`
+ * ({ port, token, pid, ...state }) so the plugin can find and authenticate to
+ * it. The port is OS-assigned and the token is random per launch.
  */
 
 'use strict';
@@ -25,12 +26,12 @@ const http = require('http');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const { bridgeInfoFile } = require('./paths');
+const { companionInfoFile } = require('./paths');
 const { log } = require('./logger');
 
 const MAX_BODY_BYTES = 1 << 20; // 1 MiB
+const TOKEN_HEADER = 'x-dsh-api-companion-token';
 
-/** 收集请求体 */
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let size = 0;
@@ -56,27 +57,27 @@ function sendJson(res, status, data) {
 }
 
 /**
- * 纯请求分发器（不依赖 Electron，便于单独测试）。
- * @param {object} api 能力实现：getState/openWorkspaceRequested/pasteToInput/showWindow/reloadWindow/quitApp
- * @param {string} token 期望的桥接 token
+ * Pure dispatcher (kept dependency-free so it can be unit-tested).
+ * @param {object} api  Capability implementation: getState/openWorkspaceRequested/pasteToInput/showWindow/reloadWindow/quitApp
+ * @param {string} token  Expected companion token
  */
-function createBridgeHandler(api, token) {
+function createHandler(api, token) {
   return async (req, res) => {
     try {
-      // token 校验：任何请求都必须携带
-      if (req.headers['x-dsh-bridge-token'] !== token) {
+      if (req.headers[TOKEN_HEADER] !== token) {
         sendJson(res, 401, { ok: false, error: 'unauthorized' });
         return;
       }
       const url = new URL(req.url || '/', 'http://localhost');
       const method = req.method || 'GET';
+      const pathname = url.pathname;
 
-      if (method === 'GET' && url.pathname === '/bridge/state') {
+      if (method === 'GET' && pathname === '/companion/state') {
         sendJson(res, 200, { ok: true, state: api.getState() });
         return;
       }
 
-      if (method === 'POST' && url.pathname === '/bridge/workspace/open') {
+      if (method === 'POST' && pathname === '/companion/workspace/open') {
         let body = {};
         try { body = JSON.parse(await readBody(req) || '{}'); } catch { /* empty */ }
         const result = await api.openWorkspaceRequested(
@@ -92,7 +93,7 @@ function createBridgeHandler(api, token) {
         return;
       }
 
-      if (method === 'POST' && url.pathname === '/bridge/input/paste') {
+      if (method === 'POST' && pathname === '/companion/input/paste') {
         let body = {};
         try { body = JSON.parse(await readBody(req) || '{}'); } catch { /* empty */ }
         if (typeof body.text !== 'string') {
@@ -104,25 +105,25 @@ function createBridgeHandler(api, token) {
         return;
       }
 
-      if (method === 'POST' && url.pathname === '/bridge/window/show') {
+      if (method === 'POST' && pathname === '/companion/window/show') {
         const result = api.showWindow();
         sendJson(res, result && result.ok ? 200 : 400, result || { ok: false, error: 'show failed' });
         return;
       }
 
-      if (method === 'POST' && url.pathname === '/bridge/window/reload') {
+      if (method === 'POST' && pathname === '/companion/window/reload') {
         const result = api.reloadWindow();
         sendJson(res, result && result.ok ? 200 : 400, result || { ok: false, error: 'reload failed' });
         return;
       }
 
-      if (method === 'POST' && url.pathname === '/bridge/app/quit') {
+      if (method === 'POST' && pathname === '/companion/app/quit') {
         sendJson(res, 200, { ok: true });
         api.quitApp();
         return;
       }
 
-      sendJson(res, 404, { ok: false, error: 'unknown bridge endpoint: ' + url.pathname });
+      sendJson(res, 404, { ok: false, error: 'unknown companion endpoint: ' + pathname });
     } catch (e) {
       sendJson(res, 500, { ok: false, error: e instanceof Error ? e.message : String(e) });
     }
@@ -130,19 +131,16 @@ function createBridgeHandler(api, token) {
 }
 
 /**
- * 启动桥接服务并写发现文件。
- * @param {object} opts
- *   api       能力实现（见 createBridgeHandler）
- *   infoFile  发现文件路径（默认 $DSH_HOME/desktop-bridge.json）
- * @returns {{ port: number, stop: () => void, refresh: () => void }}
+ * Start the companion HTTP service and publish the discovery file.
+ * @returns {Promise<{ port: number, stop: () => void, refresh: () => void }>}
  */
-function startBridge(opts) {
+function startCompanion(opts) {
   const api = opts.api;
   const token = crypto.randomBytes(24).toString('hex');
-  const infoFile = opts.infoFile || bridgeInfoFile();
+  const infoFile = opts.infoFile || companionInfoFile();
 
-  const server = http.createServer(createBridgeHandler(api, token));
-  server.on('error', (e) => log('bridge: server error', e.message));
+  const server = http.createServer(createHandler(api, token));
+  server.on('error', (e) => log('companion: server error', e.message));
 
   const writeInfo = () => {
     try {
@@ -155,7 +153,7 @@ function startBridge(opts) {
       fs.mkdirSync(path.dirname(infoFile), { recursive: true });
       fs.writeFileSync(infoFile, JSON.stringify(info, null, 2), 'utf8');
     } catch (e) {
-      log('bridge: write info failed', e.message);
+      log('companion: write info failed', e.message);
     }
   };
 
@@ -163,11 +161,11 @@ function startBridge(opts) {
     server.listen(0, '127.0.0.1', () => {
       const port = server.address().port;
       writeInfo();
-      log('bridge: listening on 127.0.0.1:' + port);
+      log('companion: listening on 127.0.0.1:' + port);
       resolve({
         port,
         stop: () => {
-          try { fs.unlinkSync(infoFile); } catch (_) {}
+          try { fs.unlinkSync(infoFile); } catch (_) { /* file already gone */ }
           server.close();
         },
         refresh: writeInfo,
@@ -177,4 +175,4 @@ function startBridge(opts) {
   });
 }
 
-module.exports = { startBridge, createBridgeHandler, readBody, sendJson };
+module.exports = { startCompanion, createHandler };

@@ -1,25 +1,54 @@
 /**
- * dsh-plugin/index.mjs — DeepSeek Harness Desktop 能力桥接插件
+ * dsh-api — DeepSeek Harness HTTP control-plane plugin
  *
- * 以 HTTP 路由的形式挂在 dsh 的 webServer 上（路径前缀 /desktop-api），
- * 把「桌面应用」与「dsh 内部能力」暴露给外部应用：
+ * 把 dsh 自身的内部能力以 HTTP 路由的形式挂到 dsh 的 webServer 上（前缀
+ * `/dsh-api`），让**同机的任何应用**（浏览器扩展、CLI 工具、桌面壳、编辑器
+ * 集成等）都可以通过一个稳定的入口调用 dsh，而不必去理解 dsh 的进程模型或
+ * 各服务的 in-process 接口。
  *
- *   - 语言：读 / 写 dsh 的 locale 设置（settings 服务，dsh 原生实现）
- *   - 工作区：列出 dsh 工作区注册表；打开工作区需桌面端重启 dsh（桥接）
- *   - 窗口 / 输入 / 文件对话框：桌面专属能力（桥接到 Electron 主进程）
+ * ── 两类能力 ──────────────────────────────────────────────────────────────────
  *
- * 桥接发现：桌面应用把桥接服务信息写到 $DSH_HOME/desktop-bridge.json
- * （{ port, token, dshPort, pid }）。插件按需读取；桥接不可达时，
- * dsh 原生能力（语言、工作区列表）照常可用，桌面专属能力返回 503。
+ *   1. dsh-native（**始终可用**，只要插件加载了）：
+ *        - GET  /dsh-api/health              存活探针
+ *        - GET  /dsh-api/language            读 locale.preference
+ *        - POST /dsh-api/language            写 locale.preference（settings 服务）
+ *        - GET  /dsh-api/workspace/list      列出工作区注册表
+ *        - GET  /dsh-api/workspace/current   当前 cwd / dsh 端口 / companion 状态
  *
- * 安全：
- *   - 仅处理回环请求（dsh server 本身绑定 127.0.0.1）
- *   - 写操作校验 Origin：浏览器跨站页面（非 127.0.0.1/localhost 来源）拒绝
- *   - 桥接代理携带 desktop-bridge.json 中的 token
+ *   2. companion-bridged（**需要同机 companion 进程注册**）：
+ *        - GET  /dsh-api/companion/state     companion 状态快照
+ *        - POST /dsh-api/workspace/open      打开工作区（会重启 dsh，需 companion）
+ *        - POST /dsh-api/input/paste         向 dsh Web UI 注入文本
+ *        - POST /dsh-api/window/show|reload  host 窗口控制
+ *        - POST /dsh-api/app/quit            退出 host 应用
  *
- * 安装方式（由桌面应用完成，见 src/dsh.js）：
- *   dsh web --patch <profile>/desktop-bridge.patch.yml --port <port>
- *   patch 条目: { id: dsh-desktop-bridge, name: ./desktop-bridge/index.mjs }
+ *   Companion 通过写发现文件 `$DSH_HOME/dsh-api-companion.json` 注册；
+ *   文件格式 `{ port, token, pid, ...state }`。不存在 / 端口不可达时，
+ *   companion 类接口一律返回 503（native 类接口不受影响）。
+ *
+ * ── 安全 ─────────────────────────────────────────────────────────────────────
+ *
+ *   - dsh 的 webServer 只绑定 127.0.0.1，本插件复用同一 socket
+ *   - 写接口（`POST`）校验 `Origin`：允许无 Origin（curl/CLI）与回环源；
+ *     非回环 Origin 一律 403，防止其他站点在浏览器中偷偷调用
+ *   - Companion 代理携带发现文件里的随机 token，companion 侧强制校验
+ *
+ * ── 安装 ─────────────────────────────────────────────────────────────────────
+ *
+ *   1) 拷贝 index.mjs 到某个 dsh profile 目录，例如：
+ *        $DSH_HOME/profiles/web/dsh-api/index.mjs
+ *   2) 写一份 patch 覆盖层（`--patch`）：
+ *        - insert:
+ *            - id: dsh-api
+ *              name: ./dsh-api/index.mjs
+ *   3) 启动 dsh 时透传：
+ *        dsh web --patch <patch.yml> --port 3080
+ *
+ *   插件可选 config：
+ *     { companionFile: '<path>' }  自定义 companion 发现文件（默认见上）
+ *     { basePath: '/dsh-api' }      自定义路由前缀（默认 /dsh-api）
+ *
+ * @packageDocumentation
  */
 
 import { readFileSync, existsSync } from 'node:fs';
@@ -27,18 +56,19 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import http from 'node:http';
 
-const API_BASE = '/desktop-api';
+const DEFAULT_BASE_PATH = '/dsh-api';
+const DEFAULT_COMPANION_FILE_NAME = 'dsh-api-companion.json';
 const SUPPORTED_LANGS = ['zh', 'en'];
 const MAX_BODY_BYTES = 1 << 20; // 1 MiB
-const BRIDGE_TIMEOUT_MS = 8000;
+const COMPANION_TIMEOUT_MS = 8000;
 
-/** $DSH_HOME（桌面应用 spawn 时也可通过环境变量覆盖） */
+/** $DSH_HOME（覆盖：环境变量 DSH_HOME，默认 ~/.dsh） */
 function dshHome() {
   return process.env.DSH_HOME || join(homedir(), '.dsh');
 }
 
-/** 读取桌面桥接信息；文件缺失或损坏返回 null */
-function readBridgeInfo(file) {
+/** 读取 companion 发现文件；文件缺失、损坏、端口不合法返回 null */
+function readCompanionInfo(file) {
   try {
     if (!existsSync(file)) return null;
     const info = JSON.parse(readFileSync(file, 'utf8'));
@@ -49,7 +79,7 @@ function readBridgeInfo(file) {
   }
 }
 
-/** 收集请求体（上限 1 MiB） */
+/** 收集请求体（上限 1 MiB，超过直接 destroy 连接） */
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let size = 0;
@@ -67,7 +97,7 @@ function readBody(req) {
   });
 }
 
-/** 写操作校验来源：无 Origin（curl/CLI）或回环来源放行 */
+/** 写接口 Origin 校验：无 Origin（curl/本地进程）与回环 Origin 放行 */
 function originAllowed(req) {
   const origin = req.headers.origin;
   if (!origin) return true;
@@ -79,22 +109,22 @@ function originAllowed(req) {
   }
 }
 
-/** 代理请求到 Electron 桥接服务 */
-function proxyToBridge(bridge, method, path, body) {
+/** 短超时的 HTTP 代理到 companion；网络层错误落成结构化 status */
+function proxyToCompanion(companion, method, path, body) {
   return new Promise((resolve) => {
     const payload = body === undefined ? null : JSON.stringify(body);
     const req = http.request({
       host: '127.0.0.1',
-      port: bridge.port,
+      port: companion.port,
       path,
       method,
       headers: {
-        'x-dsh-bridge-token': bridge.token || '',
+        'x-dsh-api-companion-token': companion.token || '',
         ...(payload !== null
           ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) }
           : {}),
       },
-      timeout: BRIDGE_TIMEOUT_MS,
+      timeout: COMPANION_TIMEOUT_MS,
     }, (res) => {
       let buf = '';
       res.on('data', (c) => { buf += c; });
@@ -126,7 +156,7 @@ function sendError(res, status, message) {
   sendJson(res, status, { ok: false, error: message });
 }
 
-/** 把 work 的异常统一成 JSON 错误响应 */
+/** 把 work 的异常收敛成 JSON 错误响应，避免 500 页面 */
 function safe(res, work) {
   Promise.resolve()
     .then(work)
@@ -134,54 +164,57 @@ function safe(res, work) {
 }
 
 export default {
-  name: 'dsh-desktop-bridge',
-  // webServer 由同树中的 dsh-host-webserver 条目并行提供；声明硬依赖
-  // 让 Cordis 等到服务就绪后再激活本插件（loader 条目是并行 apply 的）。
+  name: 'dsh-api',
+  // webServer 由 dsh-host-webserver 提供；声明硬依赖让 Cordis 等 service 就绪后再激活
   inject: ['webServer'],
 
-  // loader 把插件配置作为 apply 的第二个参数传入（Cordis Fiber.execute）
   apply(ctx, config) {
     config = config || {};
-    const bridgeFile = config.bridgeFile || join(dshHome(), 'desktop-bridge.json');
+    const basePath = typeof config.basePath === 'string' && config.basePath.startsWith('/')
+      ? config.basePath.replace(/\/+$/, '') || DEFAULT_BASE_PATH
+      : DEFAULT_BASE_PATH;
+    const companionFile = config.companionFile || join(dshHome(), DEFAULT_COMPANION_FILE_NAME);
     const webServer = ctx.webServer;
 
-    const getBridge = () => readBridgeInfo(bridgeFile);
+    const readCompanion = () => readCompanionInfo(companionFile);
 
     ctx.effect(() => webServer.register({
       kind: 'prefix',
-      path: API_BASE,
+      path: basePath,
       handler: (req, res) => safe(res, async () => {
-        // settings / workspaceRegistry 由其他条目提供，请求时再取
+        // 这些 service 由其他条目提供，可选依赖：每次请求现取，缺失时降级
         const settings = ctx.get('settings');
         const workspaceRegistry = ctx.get('workspaceRegistry');
         const url = new URL(req.url || '/', 'http://localhost');
-        const sub = url.pathname.slice(API_BASE.length).replace(/^\/+/, '');
+        const sub = url.pathname.slice(basePath.length).replace(/^\/+/, '');
         const method = req.method || 'GET';
         const dshPort = req.socket.localPort || null;
 
-        // 读端点（无副作用）：GET /health /workspace/current /workspace/list /language /app/state
-        if (method === 'GET' && (sub === 'health' || sub === 'workspace/current' || sub === 'workspace/list' || sub === 'language' || sub === 'app/state')) {
-          if (sub === 'health') {
-            const bridge = getBridge();
+        // ── 只读端点（无副作用，GET） ────────────────────────────────────────
+        if (method === 'GET') {
+          if (sub === 'health' || sub === '') {
+            const companion = readCompanion();
             sendJson(res, 200, {
               ok: true,
-              service: 'dsh-desktop-bridge',
+              service: 'dsh-api',
+              basePath,
               dshPort,
               cwd: process.cwd(),
-              desktop: bridge ? { port: bridge.port, pid: bridge.pid || null } : null,
+              companion: companion ? { port: companion.port, pid: companion.pid || null } : null,
             });
             return;
           }
-          if (sub === 'workspace/current') {
-            const bridge = getBridge();
-            let desktopState = null;
-            if (bridge) {
-              const r = await proxyToBridge(bridge, 'GET', '/bridge/state');
-              if (r.body && r.body.ok) desktopState = r.body.state || null;
-            }
-            sendJson(res, 200, { ok: true, cwd: process.cwd(), dshPort, desktop: desktopState });
+
+          if (sub === 'language') {
+            let language = null;
+            try {
+              const locale = settings?.get('locale');
+              if (locale && typeof locale === 'object') language = locale.preference || null;
+            } catch { /* namespace 未注册 */ }
+            sendJson(res, 200, { ok: true, language, supported: SUPPORTED_LANGS });
             return;
           }
+
           if (sub === 'workspace/list') {
             if (workspaceRegistry === undefined) {
               sendJson(res, 200, { ok: true, workspaces: [] });
@@ -197,24 +230,27 @@ export default {
             sendJson(res, 200, { ok: true, workspaces });
             return;
           }
-          if (sub === 'language') {
-            let language = null;
-            try {
-              const locale = settings?.get('locale');
-              if (locale && typeof locale === 'object') language = locale.preference || null;
-            } catch { /* namespace 未注册 */ }
-            sendJson(res, 200, { ok: true, language, supported: SUPPORTED_LANGS });
+
+          if (sub === 'workspace/current') {
+            const companion = readCompanion();
+            let companionState = null;
+            if (companion) {
+              const r = await proxyToCompanion(companion, 'GET', '/companion/state');
+              if (r.body && r.body.ok) companionState = r.body.state || null;
+            }
+            sendJson(res, 200, { ok: true, cwd: process.cwd(), dshPort, companion: companionState });
             return;
           }
-          if (sub === 'app/state') {
-            const bridge = getBridge();
-            if (!bridge) {
-              sendJson(res, 200, { ok: true, desktop: null });
+
+          if (sub === 'companion/state') {
+            const companion = readCompanion();
+            if (!companion) {
+              sendError(res, 503, 'companion not available');
               return;
             }
-            const r = await proxyToBridge(bridge, 'GET', '/bridge/state');
+            const r = await proxyToCompanion(companion, 'GET', '/companion/state');
             if (!r.body || !r.body.ok) {
-              sendError(res, 502, 'desktop bridge unreachable');
+              sendError(res, 502, 'companion unreachable');
               return;
             }
             sendJson(res, 200, { ok: true, ...r.body.state });
@@ -222,13 +258,13 @@ export default {
           }
         }
 
-        // 写端点（有副作用）：必须通过 Origin 校验
+        // ── 写端点（POST） ─────────────────────────────────────────────────
         if (!originAllowed(req)) {
           sendError(res, 403, 'origin not allowed');
           return;
         }
 
-        // POST /language — dsh 原生能力，无需桥接
+        // POST /language — dsh 原生能力，无需 companion
         if (sub === 'language' && method === 'POST') {
           if (settings === undefined) {
             sendError(res, 503, 'settings service unavailable');
@@ -247,24 +283,23 @@ export default {
         }
 
         const KNOWN_ENDPOINTS = new Set([
-          'health', 'workspace/current', 'workspace/list', 'workspace/open',
+          'health', '', 'workspace/current', 'workspace/list', 'workspace/open',
           'language', 'input/paste', 'window/show', 'window/reload',
-          'app/state', 'app/quit',
+          'companion/state', 'app/quit',
         ]);
         if (!KNOWN_ENDPOINTS.has(sub)) {
-          sendError(res, 404, `unknown ${API_BASE} endpoint: /${sub}`);
+          sendError(res, 404, `unknown ${basePath} endpoint: /${sub}`);
           return;
         }
-        // 到这里说明：读端点且非 GET（已在上方处理 GET）、或 language 且非 POST
-        if (sub === 'language' || method !== 'POST') {
+        if (method !== 'POST') {
           sendError(res, 405, 'method not allowed');
           return;
         }
 
-        // 其余写端点走桌面桥接
-        const bridge = getBridge();
-        if (!bridge) {
-          sendError(res, 503, 'desktop bridge unavailable (dsh started without the desktop app?)');
+        // 剩余写端点走 companion
+        const companion = readCompanion();
+        if (!companion) {
+          sendError(res, 503, 'companion not available (dsh started without a host companion?)');
           return;
         }
 
@@ -272,9 +307,10 @@ export default {
           let body = {};
           try { body = JSON.parse(await readBody(req) || '{}'); } catch { /* empty */ }
           const pathValue = typeof body.path === 'string' && body.path.length > 0 ? body.path : null;
-          const r = await proxyToBridge(bridge, 'POST', '/bridge/workspace/open', { path: pathValue });
+          const r = await proxyToCompanion(companion, 'POST', '/companion/workspace/open', { path: pathValue });
           if (!r.body || !r.body.ok) {
-            sendError(res, (r.body && r.body.error) ? 400 : 502, (r.body && r.body.error) || 'workspace switch failed');
+            const message = (r.body && r.body.error) || 'workspace switch failed';
+            sendError(res, (r.body && r.body.error) ? 400 : 502, message);
             return;
           }
           sendJson(res, 200, { ok: true, ...r.body.result });
@@ -288,7 +324,7 @@ export default {
             sendError(res, 400, 'text (string) is required');
             return;
           }
-          const r = await proxyToBridge(bridge, 'POST', '/bridge/input/paste', { text: body.text });
+          const r = await proxyToCompanion(companion, 'POST', '/companion/input/paste', { text: body.text });
           if (!r.body || !r.body.ok) {
             sendError(res, 502, (r.body && r.body.error) || 'paste failed');
             return;
@@ -298,20 +334,20 @@ export default {
         }
 
         if (sub === 'window/show') {
-          const r = await proxyToBridge(bridge, 'POST', '/bridge/window/show');
-          sendJson(res, r.body && r.body.ok ? 200 : 502, r.body || { ok: false, error: 'bridge error' });
+          const r = await proxyToCompanion(companion, 'POST', '/companion/window/show');
+          sendJson(res, r.body && r.body.ok ? 200 : 502, r.body || { ok: false, error: 'companion error' });
           return;
         }
 
         if (sub === 'window/reload') {
-          const r = await proxyToBridge(bridge, 'POST', '/bridge/window/reload');
-          sendJson(res, r.body && r.body.ok ? 200 : 502, r.body || { ok: false, error: 'bridge error' });
+          const r = await proxyToCompanion(companion, 'POST', '/companion/window/reload');
+          sendJson(res, r.body && r.body.ok ? 200 : 502, r.body || { ok: false, error: 'companion error' });
           return;
         }
 
         if (sub === 'app/quit') {
-          const r = await proxyToBridge(bridge, 'POST', '/bridge/app/quit');
-          sendJson(res, r.body && r.body.ok ? 200 : 502, r.body || { ok: false, error: 'bridge error' });
+          const r = await proxyToCompanion(companion, 'POST', '/companion/app/quit');
+          sendJson(res, r.body && r.body.ok ? 200 : 502, r.body || { ok: false, error: 'companion error' });
           return;
         }
 
