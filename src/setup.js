@@ -8,7 +8,7 @@
 const { execSync } = require('child_process');
 const { nodeBin } = require('./paths');
 const { ensureInstalled } = require('./install');
-const { ensureDsh } = require('./dsh');
+const { ensureDsh, installDesktopBridgePlugin } = require('./dsh');
 const { log } = require('./logger');
 const { t } = require('./i18n');
 
@@ -47,6 +47,10 @@ async function runSetup(splashWin, openMain) {
 
   // Step 3: 启动/复用 dsh 服务（动态端口）
   progress(splashWin, 'start', 'active', { label: t('steps.start.starting'), pct: 50 });
+
+  // 把桌面桥接插件安装进 web profile，确保本次 spawn 的 dsh 通过 --patch 加载它
+  installDesktopBridgePlugin();
+
   let result;
   try {
     result = await ensureDsh(stdout => {

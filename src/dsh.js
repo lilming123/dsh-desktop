@@ -7,6 +7,10 @@
  *   3. 没找到 → 从 3080 起递增找空闲端口，dsh --port <空闲端口> 启动
  *
  * dsh 进程 detached + unref，关闭 app 不杀 dsh，下次打开复用。
+ *
+ * 桌面桥接插件：每次自己启动 dsh 时，把仓库自带的 dsh-plugin/ 安装到
+ * web profile 目录（desktop-bridge/），并通过 `--patch` 叠加给 dsh 加载，
+ * 让外部应用可通过 http://127.0.0.1:<port>/desktop-api/* 调用能力。
  */
 
 const { spawn } = require('child_process');
@@ -14,13 +18,20 @@ const http = require('http');
 const net = require('net');
 const fs = require('fs');
 const path = require('path');
-const { nodeBin, npxBin, dshEntryPath } = require('./paths');
+const { nodeBin, npxBin, dshEntryPath, bridgePluginDir, bridgePatchFile, bundledBridgePluginFile } = require('./paths');
 const { log } = require('./logger');
 
 const DEFAULT_PORT = 3080;
 const PORT_SCAN_RANGE = 100;           // 3080–3180
 const POLL_MS = 300;
 const POLL_TIMEOUT_MS = 60000;
+
+/** --patch 覆盖文件的内容（顶层 insert 追加新插件行；name 相对 profile 目录） */
+const BRIDGE_PATCH_CONTENT = `# dsh-desktop-bridge 插件补丁层（由 dsh-desktop 应用写入）
+- insert:
+    - id: dsh-desktop-bridge
+      name: ./desktop-bridge/index.mjs
+`;
 
 let dshProc = null;
 let dshEntry = null;
@@ -30,6 +41,35 @@ let actualPort = DEFAULT_PORT;        // 运行时实际使用的端口
 /** 当前 dsh 服务的 URL（动态端口） */
 function dshUrl() {
   return `http://127.0.0.1:${actualPort}`;
+}
+
+/** 当前工作区目录（可能为 null —— 未通过本应用切换过） */
+function getWorkspaceDir() {
+  return workspaceDir;
+}
+
+/**
+ * 把仓库自带的桌面桥接插件安装到 web profile 目录，供 --patch 引用。
+ * 每次启动都重写（文件很小），保证与当前 app 版本一致。
+ * 在 ensureDsh 之前调用一次即可。
+ */
+function installDesktopBridgePlugin() {
+  const src = bundledBridgePluginFile();
+  const dir = bridgePluginDir();
+  try {
+    if (!fs.existsSync(src)) {
+      log('desktop-bridge: bundled plugin missing at', src);
+      return false;
+    }
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'index.mjs'), fs.readFileSync(src, 'utf8'), 'utf8');
+    fs.writeFileSync(bridgePatchFile(), BRIDGE_PATCH_CONTENT, 'utf8');
+    log('desktop-bridge: plugin installed to', dir);
+    return true;
+  } catch (e) {
+    log('desktop-bridge: install failed:', e.message);
+    return false;
+  }
 }
 
 /**
@@ -134,9 +174,13 @@ function startDsh(onOutput, port) {
   if (!dshEntry) dshEntry = dshEntryPath();
   const useDirect = dshEntry && fs.existsSync(dshEntry);
   const cmd = useDirect ? nodeBin() : npxBin();
+  // 注意顺序：--patch 是 dsh CLI 自身选项，必须排在 web app 透传参数（--port）之前
+  const patchArgs = fs.existsSync(bridgePatchFile())
+    ? ['--patch', bridgePatchFile()]
+    : [];
   const args = useDirect
-    ? [dshEntry, 'web', '--port', String(port)]
-    : ['--no-install', '@deepseek-ai/dsh', 'web', '--port', String(port)];
+    ? [dshEntry, 'web', ...patchArgs, '--port', String(port)]
+    : ['--no-install', '@deepseek-ai/dsh', 'web', ...patchArgs, '--port', String(port)];
   log('spawning dsh', useDirect ? '(direct node)' : '(npx)', cmd, args);
 
   dshProc = spawn(cmd, args, {
@@ -217,4 +261,6 @@ module.exports = {
   isPortFree,
   findExistingDsh,
   findFreePort,
+  installDesktopBridgePlugin,
+  getWorkspaceDir,
 };

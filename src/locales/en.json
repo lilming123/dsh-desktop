@@ -32,9 +32,16 @@
   "menu": {
     "file": "File",
     "openFolder": "Open Folder as Workspace…",
+    "openRecent": "Open Recent",
+    "noRecent": "No recent workspaces",
     "addFile": "Add File…",
     "closeWindow": "Close Window",
     "language": "Language",
+    "dsh": "DSH",
+    "currentWorkspace": "Current Workspace",
+    "reloadDsh": "Reload DSH",
+    "showWindow": "Show Window",
+    "openInBrowser": "Open in Browser",
     "edit": "Edit",
     "view": "View",
     "window": "Window"

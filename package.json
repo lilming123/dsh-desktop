@@ -25,19 +25,31 @@
       "preload-main.js",
       "splash.html",
       "icon.png",
-      "src/**/*"
+      "src/**/*",
+      "dsh-plugin/**/*"
     ],
     "mac": {
       "category": "public.app-category.developer-tools",
       "icon": "icon.png",
       "target": [
-        { "target": "dir", "arch": ["arm64", "x64"] }
+        {
+          "target": "dir",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
       ]
     },
     "win": {
       "icon": "icon.png",
       "target": [
-        { "target": "nsis", "arch": ["x64"] }
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
       ]
     },
     "nsis": {
@@ -46,6 +58,7 @@
     }
   },
   "devDependencies": {
+    "@resvg/resvg-js": "^2.6.2",
     "electron": "^34.5.8",
     "electron-builder": "^25.1.8"
   }

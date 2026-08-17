@@ -32,9 +32,16 @@
   "menu": {
     "file": "文件",
     "openFolder": "打开文件夹作为工作区…",
+    "openRecent": "打开最近的工作区",
+    "noRecent": "暂无最近工作区",
     "addFile": "添加文件…",
     "closeWindow": "关闭窗口",
     "language": "语言",
+    "dsh": "DSH",
+    "currentWorkspace": "当前工作区",
+    "reloadDsh": "重载 DSH",
+    "showWindow": "显示窗口",
+    "openInBrowser": "在浏览器中打开",
     "edit": "编辑",
     "view": "视图",
     "window": "窗口"

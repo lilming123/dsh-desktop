@@ -4,26 +4,27 @@
  * 职责仅限于：
  *   1. 创建启动页（splash）和主窗口
  *   2. 编排 setup 流程（环境检查 → dsh 安装 → 服务启动 → 打开 UI）
- *   3. 应用菜单和生命周期
+ *   3. 应用菜单、桥接服务和生命周期
  *
- * 所有业务逻辑拆到 src/ 下：paths / logger / dsh / install / setup / menu
+ * 所有业务逻辑拆到 src/ 下：paths / logger / dsh / install / setup / menu /
+ * capabilities / bridge / i18n
  */
 
 'use strict';
 
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow } = require('electron');
 const path = require('path');
-const fs = require('fs');
-const os = require('os');
 const { log } = require('./src/logger');
 const { buildMenu } = require('./src/menu');
 const { runSetup } = require('./src/setup');
-const { switchWorkspace, dshUrl } = require('./src/dsh');
-const { getDict, onLangChange, getLang, watchDshLocale } = require('./src/i18n');
+const { dshUrl } = require('./src/dsh');
+const { getDict, onLangChange, watchDshLocale } = require('./src/i18n');
+const capabilities = require('./src/capabilities');
+const { startBridge } = require('./src/bridge');
 
 let splashWin = null;
 let mainWin   = null;
-let dshPort   = 3080;  // 运行时由 setup 填入实际端口
+let bridge    = null;
 
 // ── 窗口创建 ──────────────────────────────────────────────────────────────────
 
@@ -47,31 +48,24 @@ function createSplash() {
     splashWin.webContents.send('i18n-dict', getDict());
   });
 
-  splashWin.on('closed', () => { splashWin = null; });
+  splashWin.on('closed', () => {
+    splashWin = null;
+    capabilities.setContext({ splashWin: null });
+  });
+  capabilities.setContext({ splashWin });
   return splashWin;
 }
 
-// 语言切换时：推送新字典给启动页（若还活着）
-onLangChange((newLang) => {
+// 语言切换时：推送新字典给启动页（若还活着）+ 重建菜单
+onLangChange(() => {
   try {
     if (splashWin && !splashWin.isDestroyed() && splashWin.webContents) {
       splashWin.webContents.send('i18n-dict', getDict());
     }
   } catch (_) { /* splash 已销毁，忽略 */ }
-  // 语言变化时重建菜单（覆盖 dsh→app 和 app→app 两个方向）
   try {
     if (mainWin && !mainWin.isDestroyed()) {
-      const openCb = async (folder) => {
-        if (!mainWin) return;
-        mainWin.webContents.loadURL('about:blank');
-        mainWin.webContents.executeJavaScript(
-          `document.body.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100vh;font-family:-apple-system,sans-serif;color:#666">Switching workspace…</div>'`
-        ).catch(() => {});
-        const newPort = await switchWorkspace(folder);
-        dshPort = newPort;
-        mainWin.webContents.loadURL(dshUrl());
-      };
-      buildMenu(mainWin, splashWin, openCb);
+      buildMenu(mainWin, splashWin);
     }
   } catch (e) { log('menu rebuild on lang change failed:', e && e.message); }
 });
@@ -81,8 +75,8 @@ onLangChange((newLang) => {
  * @param {number} port  dsh 实际监听端口
  */
 function createMain(port) {
-  dshPort = port;
-  const url = dshUrl();  // http://127.0.0.1:<port>
+  capabilities.setContext({ dshPort: port });
+  const url = dshUrl();
   log('creating main window, url=', url);
 
   mainWin = new BrowserWindow({
@@ -95,10 +89,14 @@ function createMain(port) {
       nodeIntegration: false,
     },
   });
+  capabilities.setContext({ mainWin });
 
   mainWin.loadURL(url);
   mainWin.once('ready-to-show', () => { splashWin?.close(); mainWin.show(); });
-  mainWin.on('closed', () => { mainWin = null; });
+  mainWin.on('closed', () => {
+    mainWin = null;
+    capabilities.setContext({ mainWin: null });
+  });
 
   // 注入滚动条样式
   mainWin.webContents.on('did-finish-load', () => {
@@ -109,27 +107,32 @@ function createMain(port) {
     );
   });
 
-  // 菜单：Open Folder 会调 switchWorkspace 重启 dsh，拿到新端口后 reload
-  buildMenu(mainWin, splashWin, async (folder) => {
-    if (!mainWin) return;
-    mainWin.webContents.loadURL('about:blank');
-    mainWin.webContents.executeJavaScript(
-      `document.body.style.cssText='margin:0;display:flex;align-items:center;justify-content:center;height:100vh;font-family:-apple-system,sans-serif;color:#666;background:#fff';` +
-      `document.body.innerHTML='<div style="text-align:center"><div style="font-size:32px;margin-bottom:12px">🔄</div><div>Switching workspace…</div><div style="font-size:12px;color:#aaa;margin-top:6px">${folder}</div></div>'`
-    ).catch(() => {});
-    const newPort = await switchWorkspace(folder);
-    dshPort = newPort;
-    mainWin.webContents.loadURL(dshUrl());
-  });
+  // 菜单（Open Folder / 最近工作区都会走 capabilities 统一能力层）
+  buildMenu(mainWin, splashWin);
 
+  // dsh 端口/工作区确定后刷新桥接发现文件
+  bridge?.refresh();
   return mainWin;
 }
 
 // ── 应用生命周期 ──────────────────────────────────────────────────────────────
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   log('=== DeepSeek Harness Desktop starting ===');
   watchDshLocale();  // 监听 dsh settings.yaml 变化，自动同步语言
+
+  // 桥接服务：暴露桌面能力给 dsh 插件（每次启动随机 token + 端口）
+  bridge = await startBridge({ api: capabilities }).catch(err => {
+    log('bridge start failed:', err.message);
+    return null;
+  });
+
+  // 状态变化（工作区切换等）→ 刷新桥接发现文件 + 重建菜单（更新当前工作区显示）
+  capabilities.setOnStateChanged(() => {
+    bridge?.refresh();
+    if (mainWin && !mainWin.isDestroyed()) buildMenu(mainWin, splashWin);
+  });
+
   const win = createSplash();
 
   // 等 splash 的 DOM ready + preload 注册好 onProgress 后再跑 setup，
@@ -156,4 +159,7 @@ app.on('window-all-closed', () => {
 });
 
 // dsh 进程以 detached + unref 启动，app 退出时自然不影响它
-app.on('before-quit', () => { /* dsh 独立存活，不 kill */ });
+app.on('before-quit', () => {
+  try { bridge?.stop(); } catch (_) {}
+  bridge = null;
+});

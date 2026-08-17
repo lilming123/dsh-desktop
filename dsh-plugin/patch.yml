@@ -1,0 +1,7 @@
+# dsh-desktop-bridge 插件补丁层
+# 由桌面应用写入 <profile 目录>/desktop-bridge.patch.yml，
+# 并在 spawn dsh 时通过 `--patch` 传入。name 相对于 profile 目录（baseUrl）。
+# 顶层 insert（不带 id）表示向根条目列表追加新插件行。
+- insert:
+    - id: dsh-desktop-bridge
+      name: ./desktop-bridge/index.mjs

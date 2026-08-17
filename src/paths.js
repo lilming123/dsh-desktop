@@ -12,6 +12,36 @@ const path = require('path');
 
 const isWin = process.platform === 'win32';
 
+/** dsh 的 home 目录（DSH_HOME 环境变量可覆盖，默认 ~/.dsh） */
+function dshHome() {
+  return process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
+}
+
+/** web profile 目录（桌面应用 spawn 的 dsh 使用 --profile web） */
+function dshProfileDir() {
+  return path.join(dshHome(), 'profiles', 'web');
+}
+
+/** 桌面桥接插件在 profile 内的安装目录（相对 name 由 patch 引用） */
+function bridgePluginDir() {
+  return path.join(dshProfileDir(), 'desktop-bridge');
+}
+
+/** --patch 覆盖文件路径（spawn dsh 时传入，加载桥接插件） */
+function bridgePatchFile() {
+  return path.join(dshProfileDir(), 'desktop-bridge.patch.yml');
+}
+
+/** 桌面桥接服务发现文件（Electron 主进程写，dsh 插件读） */
+function bridgeInfoFile() {
+  return path.join(dshHome(), 'desktop-bridge.json');
+}
+
+/** 应用自带桥接插件源码（dev 为仓库目录，打包后位于 app.asar 内） */
+function bundledBridgePluginFile() {
+  return path.join(__dirname, '..', 'dsh-plugin', 'index.mjs');
+}
+
 /** 候选的 node 可执行路径，按优先级排列 */
 function nodeBinCandidates() {
   const home = os.homedir();
@@ -95,4 +125,8 @@ function dshEntryPath() {
   return null;
 }
 
-module.exports = { nodeBin, npxBin, dshEntryPath, isWin };
+module.exports = {
+  nodeBin, npxBin, dshEntryPath, isWin,
+  dshHome, dshProfileDir, bridgePluginDir, bridgePatchFile, bridgeInfoFile,
+  bundledBridgePluginFile,
+};
