@@ -17,6 +17,7 @@ const { log } = require('./src/logger');
 const { buildMenu } = require('./src/menu');
 const { runSetup } = require('./src/setup');
 const { switchWorkspace, dshUrl } = require('./src/dsh');
+const { getDict, onLangChange } = require('./src/i18n');
 
 let splashWin = null;
 let mainWin   = null;
@@ -38,9 +39,20 @@ function createSplash() {
     },
   });
   splashWin.loadFile('splash.html');
+
+  // DOM ready 后推送 i18n 字典，让 splash 渲染正确语言文案
+  splashWin.webContents.once('dom-ready', () => {
+    splashWin.webContents.send('i18n-dict', getDict());
+  });
+
   splashWin.on('closed', () => { splashWin = null; });
   return splashWin;
 }
+
+// 语言切换时：推送新字典给 splash + 重建菜单
+onLangChange(() => {
+  splashWin?.webContents?.send('i18n-dict', getDict());
+});
 
 /**
  * 创建主窗口（加载 dsh Web UI）。
@@ -73,7 +85,7 @@ function createMain(port) {
   });
 
   // 菜单：Open Folder 会调 switchWorkspace 重启 dsh，拿到新端口后 reload
-  buildMenu(mainWin, async (folder) => {
+  buildMenu(mainWin, splashWin, async (folder) => {
     if (!mainWin) return;
     mainWin.webContents.loadURL('about:blank');
     mainWin.webContents.executeJavaScript(

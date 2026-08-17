@@ -1,0 +1,42 @@
+{
+  "app": {
+    "title": "DeepSeek Harness",
+    "tagline": "Starting up…"
+  },
+  "steps": {
+    "node": {
+      "checking": "Checking Node.js",
+      "notFound": "Node.js not found. Install from nodejs.org then restart."
+    },
+    "install": {
+      "checking": "Checking @deepseek-ai/dsh",
+      "installing": "Installing @deepseek-ai/dsh…",
+      "installed": "@deepseek-ai/dsh  ✓ installed",
+      "ready": "@deepseek-ai/dsh  ✓"
+    },
+    "start": {
+      "starting": "Starting server…",
+      "reused": "Server reused on :{{port}} ✓",
+      "ready": "Server ready on :{{port}} ✓",
+      "portInUse": "Port {{port}} is in use by another program. Free it and restart.",
+      "noFreePort": "No free port available in range 3080-3180."
+    },
+    "ready": {
+      "opening": "Opening UI"
+    }
+  },
+  "errors": {
+    "setupFailed": "Setup failed",
+    "tryAgain": "Try Again"
+  },
+  "menu": {
+    "file": "File",
+    "openFolder": "Open Folder as Workspace…",
+    "addFile": "Add File…",
+    "closeWindow": "Close Window",
+    "language": "Language",
+    "edit": "Edit",
+    "view": "View",
+    "window": "Window"
+  }
+}

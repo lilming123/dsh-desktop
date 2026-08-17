@@ -140,33 +140,56 @@
   </div>
 
   <div class="title">DeepSeek Harness</div>
-  <div class="tagline" id="tagline">Initializing…</div>
+  <div class="tagline" id="tagline" data-i18n="app.tagline">Starting up…</div>
 
   <div class="steps">
     <div class="step" id="step-node">
       <span class="step-icon">○</span>
-      <span>Checking Node.js</span>
+      <span data-i18n="steps.node.checking">Checking Node.js</span>
     </div>
     <div class="step" id="step-install">
       <span class="step-icon">○</span>
-      <span id="lbl-install">Checking @deepseek-ai/dsh</span>
+      <span data-i18n="steps.install.checking" id="lbl-install">Checking @deepseek-ai/dsh</span>
     </div>
     <div class="step" id="step-start">
       <span class="step-icon">○</span>
-      <span>Starting server on :3080</span>
+      <span data-i18n="steps.start.starting">Starting server…</span>
     </div>
     <div class="step" id="step-ready">
       <span class="step-icon">○</span>
-      <span>Opening DeepSeek Harness</span>
+      <span data-i18n="steps.ready.opening">Opening UI</span>
     </div>
   </div>
 
   <div class="progress-wrap"><div class="progress-fill" id="pbar"></div></div>
 
   <div class="status-line" id="status"></div>
-  <button class="btn-retry" id="btnRetry">Try Again</button>
+  <button class="btn-retry" id="btnRetry" data-i18n="errors.tryAgain">Try Again</button>
 
   <script>
+    // i18n: 字典从主进程注入，支持语言切换后动态刷新
+    let i18nDict = {};
+
+    function t(key, vars = {}) {
+      let val = i18nDict;
+      for (const p of key.split('.')) { val = val?.[p]; if (val === undefined) return key; }
+      let str = typeof val === 'string' ? val : String(val);
+      for (const [k, v] of Object.entries(vars || {})) str = str.replace(new RegExp('{{' + k + '}}', 'g'), String(v));
+      return str;
+    }
+
+    // 刷新所有 data-i18n 元素的文案
+    function applyI18n() {
+      document.querySelectorAll('[data-i18n]').forEach(el => {
+        el.textContent = t(el.getAttribute('data-i18n'));
+      });
+    }
+
+    // 主进程推送字典 + 语言切换时重推
+    if (window.electronAPI?.onI18n) {
+      window.electronAPI.onI18n(dict => { i18nDict = dict; applyI18n(); });
+    }
+
     const els = {
       node:    document.getElementById('step-node'),
       install: document.getElementById('step-install'),
@@ -205,7 +228,7 @@
       const icon = el.querySelector('.step-icon');
       icon.style.visibility = '';
       icon.textContent = '✕';
-      tagline.textContent = 'Setup failed';
+      tagline.textContent = t('errors.setupFailed');
       status.textContent = msg || '';
       retryBtn.style.display = 'inline-block';
     }
@@ -214,10 +237,14 @@
       if (d.pct !== undefined) pbar.style.width = d.pct + '%';
       if (d.msg) status.textContent = d.msg;
       if (d.label) tagline.textContent = d.label;
-      if (d.installLabel) lblInstall.textContent = d.installLabel;
       if (d.state === 'active') activate(d.step);
       if (d.state === 'done')   done(d.step);
       if (d.state === 'error')  fail(d.step, d.msg);
+    }
+
+    // 语言切换时重新刷新所有文案（步骤标签会从 i18n 字典更新）
+    if (window.electronAPI?.onLangChange) {
+      window.electronAPI.onLangChange(() => applyI18n());
     }
 
     // Drain buffered events from before IPC listener was ready

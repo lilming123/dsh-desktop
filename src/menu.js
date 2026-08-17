@@ -1,15 +1,19 @@
 /**
  * menu.js — 应用菜单栏（macOS 顶部 / Windows 窗口菜单）
  *
- * 提供两个 File 菜单项：
- *   - Open Folder as Workspace…  (⌘⇧O / Ctrl+Shift+O)
- *   - Add File…                    (⌘O   / Ctrl+O)
+ * 提供三个主功能：
+ *   - File > Open Folder as Workspace…  (⌘⇧O / Ctrl+Shift+O)
+ *   - File > Add File…                    (⌘O   / Ctrl+O)
+ *   - Language > English / 简体中文 / 繁體中文
  *
- * 选中后把路径注入到 dsh 的输入框（textarea / contenteditable）。
- * macOS 首项必须是 app-name 菜单，否则 File 等后续菜单不显示。
+ * 选中文件后把路径注入到 dsh 的输入框（textarea / contenteditable）。
+ * 切换语言后重建菜单 + 通知启动页更新文案。
  */
 
 const { app, Menu, dialog } = require('electron');
+const { t, getLang, setLang, getSupportedLangs } = require('./i18n');
+
+const LANG_LABELS = { 'en': 'English', 'zh': '简体中文', 'zh-TW': '繁體中文' };
 
 /** 把文本注入到当前激活的输入元素 */
 function injectToInput(mainWin, text) {
@@ -33,13 +37,14 @@ function injectToInput(mainWin, text) {
 
 /**
  * 构建并设置应用菜单。
- * @param {BrowserWindow} mainWin  主窗口引用（注入输入用）
- * @param {function} onOpenWorkspace  选了文件夹后的回调（重启 dsh）
+ * @param {BrowserWindow} mainWin        主窗口引用
+ * @param {BrowserWindow|null} splashWin 启动页引用（语言切换时刷新文案）
+ * @param {function} onOpenWorkspace     选了文件夹后的回调
  */
-function buildMenu(mainWin, onOpenWorkspace) {
+function buildMenu(mainWin, splashWin, onOpenWorkspace) {
   const openWorkspace = async () => {
     const { canceled, filePaths } = await dialog.showOpenDialog(mainWin, {
-      title: 'Open Folder as Workspace',
+      title: t('menu.openFolder'),
       properties: ['openDirectory', 'createDirectory'],
     });
     if (canceled || !filePaths.length) return;
@@ -48,7 +53,7 @@ function buildMenu(mainWin, onOpenWorkspace) {
 
   const openFile = async () => {
     const { canceled, filePaths } = await dialog.showOpenDialog(mainWin, {
-      title: 'Add File',
+      title: t('menu.addFile'),
       properties: ['openFile', 'multiSelections'],
     });
     if (canceled || !filePaths.length) return;
@@ -56,8 +61,21 @@ function buildMenu(mainWin, onOpenWorkspace) {
     injectToInput(mainWin, paths);
   };
 
+  const currentLang = getLang();
+
+  // Language 子菜单（带 ✓ 标记当前选中）
+  const langSubmenu = getSupportedLangs().map(lang => ({
+    label: (lang === currentLang ? '✓ ' : '   ') + LANG_LABELS[lang],
+    click: () => {
+      setLang(lang);
+      // 重建菜单 + 通知启动页
+      buildMenu(mainWin, splashWin, onOpenWorkspace);
+      splashWin?.webContents?.send('lang-changed', lang);
+    },
+  }));
+
   const template = [
-    // macOS: 首项必须是 app-name 菜单，否则 File 不显示
+    // macOS: 首项必须是 app-name 菜单
     ...(process.platform === 'darwin' ? [{
       label: app.name,
       submenu: [
@@ -71,17 +89,21 @@ function buildMenu(mainWin, onOpenWorkspace) {
       ],
     }] : []),
     {
-      label: 'File',
+      label: t('menu.file'),
       submenu: [
-        { label: 'Open Folder as Workspace…', accelerator: 'CmdOrCtrl+Shift+O', click: openWorkspace },
-        { label: 'Add File…',                 accelerator: 'CmdOrCtrl+O',       click: openFile },
+        { label: t('menu.openFolder'), accelerator: 'CmdOrCtrl+Shift+O', click: openWorkspace },
+        { label: t('menu.addFile'),    accelerator: 'CmdOrCtrl+O',       click: openFile },
         { type: 'separator' },
-        { label: 'Close Window', role: 'close' },
+        { label: t('menu.closeWindow'), role: 'close' },
       ],
     },
-    { label: 'Edit',   role: 'editMenu' },
-    { label: 'View',   role: 'viewMenu' },
-    { label: 'Window', role: 'windowMenu' },
+    {
+      label: t('menu.language'),
+      submenu: langSubmenu,
+    },
+    { label: t('menu.edit'),   role: 'editMenu' },
+    { label: t('menu.view'),   role: 'viewMenu' },
+    { label: t('menu.window'), role: 'windowMenu' },
   ];
 
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));

@@ -1,0 +1,42 @@
+{
+  "app": {
+    "title": "DeepSeek Harness",
+    "tagline": "正在启动…"
+  },
+  "steps": {
+    "node": {
+      "checking": "检查 Node.js",
+      "notFound": "未找到 Node.js，请从 nodejs.org 安装后重启。"
+    },
+    "install": {
+      "checking": "检查 @deepseek-ai/dsh",
+      "installing": "正在安装 @deepseek-ai/dsh…",
+      "installed": "@deepseek-ai/dsh  ✓ 已安装",
+      "ready": "@deepseek-ai/dsh  ✓"
+    },
+    "start": {
+      "starting": "正在启动服务…",
+      "reused": "复用服务 :{{port}} ✓",
+      "ready": "服务就绪 :{{port}} ✓",
+      "portInUse": "端口 {{port}} 被其他程序占用，请释放后重启。",
+      "noFreePort": "3080-3180 范围内无可用端口。"
+    },
+    "ready": {
+      "opening": "正在打开界面"
+    }
+  },
+  "errors": {
+    "setupFailed": "启动失败",
+    "tryAgain": "重试"
+  },
+  "menu": {
+    "file": "文件",
+    "openFolder": "打开文件夹作为工作区…",
+    "addFile": "添加文件…",
+    "closeWindow": "关闭窗口",
+    "language": "语言",
+    "edit": "编辑",
+    "view": "视图",
+    "window": "窗口"
+  }
+}

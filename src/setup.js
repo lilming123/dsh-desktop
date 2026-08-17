@@ -1,13 +1,8 @@
 /**
  * setup.js — 启动校验流程编排
  *
- * 四步顺序执行，每步都向启动页报告进度：
- *   1. Node.js 环境检查（读 version，< 5ms）
- *   2. dsh 安装检查（marker + FS，已装时 < 5ms；未装才走 npx 安装）
- *   3. 启动/复用 dsh 服务（已在跑就秒开，否则启动并轮询就绪）
- *   4. 打开主窗口
- *
- * 设计原则：已安装/已运行的情况下，整个 setup 走完 < 200ms。
+ * 四步顺序执行，每步都向启动页报告进度。
+ * 所有文案走 i18n，支持中英文切换。
  */
 
 const { execSync } = require('child_process');
@@ -15,6 +10,7 @@ const { nodeBin } = require('./paths');
 const { ensureInstalled } = require('./install');
 const { ensureDsh } = require('./dsh');
 const { log } = require('./logger');
+const { t } = require('./i18n');
 
 /**
  * 向启动页发送进度事件。
@@ -35,38 +31,43 @@ function progress(win, step, state, opts = {}) {
  */
 async function runSetup(splashWin, openMain) {
   // Step 1: Node.js — 读 version，瞬间完成
-  progress(splashWin, 'node', 'active', { label: 'Checking environment…', pct: 10 });
+  progress(splashWin, 'node', 'active', { label: t('steps.node.checking'), pct: 10 });
   try {
     const ver = execSync(`"${nodeBin()}" --version`, { encoding: 'utf8', timeout: 3000 }).trim();
     progress(splashWin, 'node', 'done', { msg: `Node ${ver}`, pct: 20 });
   } catch (e) {
-    progress(splashWin, 'node', 'error', { msg: 'Node.js not found. Install from nodejs.org then restart.' });
+    progress(splashWin, 'node', 'error', { msg: t('steps.node.notFound') });
     throw e;
   }
 
   // Step 2: dsh 安装检查 — 已装秒过，未装才走 npx
-  progress(splashWin, 'install', 'active', { label: 'Checking @deepseek-ai/dsh…', pct: 25 });
+  progress(splashWin, 'install', 'active', { label: t('steps.install.checking'), pct: 25 });
   await ensureInstalled();
-  progress(splashWin, 'install', 'done', { label: '@deepseek-ai/dsh  ✓', pct: 40 });
+  progress(splashWin, 'install', 'done', { label: t('steps.install.ready'), pct: 40 });
 
-  // Step 3: 启动/复用 dsh 服务（动态端口：复用已运行的，或找空闲端口启动）
-  progress(splashWin, 'start', 'active', { label: 'Starting server…', pct: 50 });
+  // Step 3: 启动/复用 dsh 服务（动态端口）
+  progress(splashWin, 'start', 'active', { label: t('steps.start.starting'), pct: 50 });
   let result;
   try {
     result = await ensureDsh(stdout => {
       progress(splashWin, 'start', 'active', { msg: stdout.slice(0, 80), pct: 60 });
     });
   } catch (e) {
-    progress(splashWin, 'start', 'error', { msg: e.message });
+    const msg = e.message.includes('No free port')
+      ? t('steps.start.noFreePort')
+      : t('steps.start.portInUse', { port: 3080 });
+    progress(splashWin, 'start', 'error', { msg });
     throw e;
   }
   progress(splashWin, 'start', 'done', {
-    label: result.mode === 'reused' ? `Server reused on :${result.port} ✓` : `Server ready on :${result.port} ✓`,
+    label: result.mode === 'reused'
+      ? t('steps.start.reused', { port: result.port })
+      : t('steps.start.ready', { port: result.port }),
     pct: 90,
   });
 
-  // Step 4: 打开主窗口（传入实际端口）
-  progress(splashWin, 'ready', 'done', { label: 'Opening UI', pct: 100 });
+  // Step 4: 打开主窗口
+  progress(splashWin, 'ready', 'done', { label: t('steps.ready.opening'), pct: 100 });
   openMain(result.port);
 }
 
