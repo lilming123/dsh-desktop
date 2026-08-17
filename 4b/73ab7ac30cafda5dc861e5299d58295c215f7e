@@ -1,0 +1,45 @@
+src/locales/zh-TW.json
+  s_d713d37a9b2b46::t_12bbdf40c9d590 1-42
+splash.html
+  s_d713d37a9b2b46::t_09192bb8f847ff 143,148,152,156,160,167,170-192
+  s_d713d37a9b2b46::t_b347d915e9d459 231,245-247
+README.md
+  s_d713d37a9b2b46::t_f581eecbbbd877 3,5-7,13,15-22,24,26,34,37,40,42,44-45,47,49,51-56,58,60,68,71-75,77,79,81,87,91-97,99-109,112,116,119,125,127,129-135
+README.zh.md
+  s_d713d37a9b2b46::t_fcc6399f35ba3c 3-135
+src/menu.js
+  s_d713d37a9b2b46::t_fb94d363934069 14
+  s_d713d37a9b2b46::t_d403e1126d4428 4-7,9-10,16,40-42,44,47,56,64-76,78,92,94-95,97,100-106
+preload.js
+  s_d713d37a9b2b46::t_dd58bb382f47c9 1-12,15-17,20-30,43,45-51
+  s_d713d37a9b2b46::t_87f7e040d7eb5b 33-39,52-56
+src/setup.js
+  s_d713d37a9b2b46::t_455873c3ce0646 4-5,13,34,39,44,46,48-49,56-59,63-65,69-70
+src/locales/zh.json
+  s_d713d37a9b2b46::t_fccc9ca1b14a74 1-42
+src/i18n.js
+  s_d713d37a9b2b46::t_c58a8f00c5f752 100-103
+  s_d713d37a9b2b46::t_7b62d7b74898e9 1-99
+src/locales/en.json
+  s_d713d37a9b2b46::t_770fe030d01ac2 1-42
+main.js
+  s_d713d37a9b2b46::t_b151d4be7f5c2d 20
+  s_d713d37a9b2b46::t_5e1c64a58dfb44 88
+  s_d713d37a9b2b46::t_17325025959628 42-47,52-55
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.40-trip",
+  "base_commit_sha": "4b73ab7ac30cafda5dc861e5299d58295c215f7e",
+  "prompts": {},
+  "sessions": {
+    "s_d713d37a9b2b46": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4c441139-3a17-45f2-815a-9ac8ca559ad2",
+        "model": "glm-5.2"
+      },
+      "human_author": "wdm <damingwang@trip.com>"
+    }
+  }
+}
