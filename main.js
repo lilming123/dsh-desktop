@@ -16,12 +16,11 @@ const path = require('path');
 const { log } = require('./src/logger');
 const { buildMenu } = require('./src/menu');
 const { runSetup } = require('./src/setup');
-const { switchWorkspace, DSH_URL } = require('./src/dsh');
-
-const DSH_URL_FULL = DSH_URL;
+const { switchWorkspace, dshUrl } = require('./src/dsh');
 
 let splashWin = null;
 let mainWin   = null;
+let dshPort   = 3080;  // 运行时由 setup 填入实际端口
 
 // ── 窗口创建 ──────────────────────────────────────────────────────────────────
 
@@ -45,10 +44,13 @@ function createSplash() {
 
 /**
  * 创建主窗口（加载 dsh Web UI）。
- * macOS 用标准 titlebar（红黄绿在 titlebar 内，与 web 内容分开）；
- * Windows 用 native frame。
+ * @param {number} port  dsh 实际监听端口
  */
-function createMain() {
+function createMain(port) {
+  dshPort = port;
+  const url = dshUrl();  // http://127.0.0.1:<port>
+  log('creating main window, url=', url);
+
   mainWin = new BrowserWindow({
     width: 1280, height: 840,
     minWidth: 900, minHeight: 600,
@@ -57,11 +59,11 @@ function createMain() {
     webPreferences: { contextIsolation: true, nodeIntegration: false },
   });
 
-  mainWin.loadURL(DSH_URL_FULL);
+  mainWin.loadURL(url);
   mainWin.once('ready-to-show', () => { splashWin?.close(); mainWin.show(); });
   mainWin.on('closed', () => { mainWin = null; });
 
-  // 注入滚动条样式（精简，亮色主题）
+  // 注入滚动条样式
   mainWin.webContents.on('did-finish-load', () => {
     mainWin.webContents.insertCSS(
       '::-webkit-scrollbar{width:6px;height:6px}' +
@@ -70,7 +72,7 @@ function createMain() {
     );
   });
 
-  // 菜单里 Open Folder 会调 switchWorkspace 重启 dsh，然后 reload 主窗口
+  // 菜单：Open Folder 会调 switchWorkspace 重启 dsh，拿到新端口后 reload
   buildMenu(mainWin, async (folder) => {
     if (!mainWin) return;
     mainWin.webContents.loadURL('about:blank');
@@ -78,8 +80,9 @@ function createMain() {
       `document.body.style.cssText='margin:0;display:flex;align-items:center;justify-content:center;height:100vh;font-family:-apple-system,sans-serif;color:#666;background:#fff';` +
       `document.body.innerHTML='<div style="text-align:center"><div style="font-size:32px;margin-bottom:12px">🔄</div><div>Switching workspace…</div><div style="font-size:12px;color:#aaa;margin-top:6px">${folder}</div></div>'`
     ).catch(() => {});
-    await switchWorkspace(folder);
-    mainWin.webContents.loadURL(DSH_URL_FULL);
+    const newPort = await switchWorkspace(folder);
+    dshPort = newPort;
+    mainWin.webContents.loadURL(dshUrl());
   });
 
   return mainWin;

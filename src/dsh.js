@@ -1,36 +1,40 @@
 /**
  * dsh.js — DeepSeek Harness 服务生命周期管理
  *
- * 职责：
- *   1. 检测 :3080 是否已有 dsh 在跑（复用，避免重复启动）
- *   2. 启动新的 dsh 进程（优先直接 node bin.js，比 npx exec 快 ~8x）
- *   3. 切换工作区（kill 旧 → 用新 cwd 重启）
- *   4. 轮询端口就绪状态
+ * 端口策略：
+ *   1. 扫描 3080–3180 找已运行的 dsh（验证响应含 __DSH_BOOT__ 特征）
+ *   2. 找到 → 复用那个端口（支持跨端口复用，不限 3080）
+ *   3. 没找到 → 从 3080 起递增找空闲端口，dsh --port <空闲端口> 启动
  *
- * dsh 进程以 detached 模式启动 + unref()，关闭 app 不杀 dsh，
- * 下次打开 app 直接复用，秒开。
+ * dsh 进程 detached + unref，关闭 app 不杀 dsh，下次打开复用。
  */
 
-const { spawn, execSync } = require('child_process');
+const { spawn } = require('child_process');
 const http = require('http');
+const net = require('net');
 const fs = require('fs');
 const path = require('path');
 const { nodeBin, npxBin, dshEntryPath } = require('./paths');
 const { log } = require('./logger');
 
-const DSH_PORT = 3080;
-const DSH_URL = `http://127.0.0.1:${DSH_PORT}`;
+const DEFAULT_PORT = 3080;
+const PORT_SCAN_RANGE = 100;           // 3080–3180
 const POLL_MS = 300;
 const POLL_TIMEOUT_MS = 60000;
 
 let dshProc = null;
-let dshEntry = null;   // 缓存 dsh bin.js 路径
-let workspaceDir = null; // null = dsh 默认目录；用户选了文件夹才设值
+let dshEntry = null;
+let workspaceDir = null;
+let actualPort = DEFAULT_PORT;        // 运行时实际使用的端口
+
+/** 当前 dsh 服务的 URL（动态端口） */
+function dshUrl() {
+  return `http://127.0.0.1:${actualPort}`;
+}
 
 /**
  * 构建传给 spawn 的环境变量。
- * Electron app bundle 的 PATH 常被精简，这里补回 node/npx 所在目录，
- * 否则 dsh 内部调 `node` 会报 "env: node: No such file or directory"。
+ * Electron app bundle 的 PATH 常被精简，补回 node/npx 目录。
  */
 function buildEnv() {
   const nodeDir = path.dirname(nodeBin());
@@ -42,22 +46,19 @@ function buildEnv() {
 }
 
 /**
- * 探测 :3080 是否有 **dsh** 在响应。
- * 不只看有没有 HTTP 响应——还要确认响应确实来自 dsh（避免别的程序占了 3080 被误判为已就绪）。
- * dsh 的响应特征：body 里有 `window.__DSH_BOOT__` 或 header 含 dsh 标识。
+ * 检查指定端口是否有 **dsh** 在响应。
+ * 通过 HTTP GET + 响应体特征（__DSH_BOOT__ / @deepseek-ai）判断。
+ * @param {number} port
+ * @returns {Promise<boolean>}
  */
-function isServerUp() {
+function isDshOnPort(port) {
   return new Promise(resolve => {
-    const req = http.get(DSH_URL, res => {
-      // 检查响应体里有没有 dsh 特征标记
+    const req = http.get(`http://127.0.0.1:${port}`, res => {
       let body = '';
       res.on('data', chunk => { body += chunk; });
       res.on('end', () => {
-        const isDsh = body.includes('__DSH_BOOT__') || body.includes('@deepseek-ai');
-        req.destroy();
-        resolve(isDsh);
+        resolve(body.includes('__DSH_BOOT__') || body.includes('@deepseek-ai'));
       });
-      // 兜底：响应头里也可能有线索
       res.resume();
     });
     req.setTimeout(1500, () => { req.destroy(); resolve(false); });
@@ -66,64 +67,76 @@ function isServerUp() {
 }
 
 /**
- * 轮询直到 dsh 就绪，超时 60s 抛错。
+ * 检查端口是否空闲（没有程序在 listen）。
+ * @param {number} port
+ * @returns {Promise<boolean>} true = 空闲
  */
-function pollReady(startMs = Date.now()) {
-  return new Promise((resolve, reject) => {
-    const elapsed = Date.now() - startMs;
-    if (elapsed > POLL_TIMEOUT_MS) {
-      return reject(new Error(`Server did not respond within ${POLL_TIMEOUT_MS / 1000}s`));
-    }
-    const req = http.get(DSH_URL, res => { res.resume(); resolve(); });
-    req.setTimeout(POLL_MS, () => req.destroy());
-    req.once('error', () => setTimeout(() => pollReady(startMs).then(resolve, reject), POLL_MS));
-  });
-}
-
-/**
- * kill 掉占用 :3080 的所有进程（防止端口残留导致新 dsh EADDRINUSE）。
- */
-/**
- * 检查 :3080 是否被任何进程占用（不一定是 dsh）。
- * @returns {Promise<boolean>}
- */
-function isPortInUse() {
+function isPortFree(port) {
   return new Promise(resolve => {
-    const req = http.get(DSH_URL, () => { req.destroy(); resolve(true); });
-    req.setTimeout(500, () => req.destroy());
-    req.once('error', () => resolve(false));
+    const tester = net.createServer();
+    tester.once('error', () => resolve(false));   // 被占用
+    tester.listen(port, '127.0.0.1', () => {
+      tester.close(() => resolve(true));           // 空闲
+    });
   });
 }
 
 /**
- * kill 掉占用 :3080 的所有进程。
- * ⚠️ 调用方必须先确认占用者是 dsh（或已征得用户同意），否则会误杀别的程序。
+ * 扫描 3080–3180 找已运行的 dsh。
+ * @returns {Promise<number|null>} dsh 端口，找不到返回 null
  */
-function killPort3080() {
-  try {
-    const cmd = process.platform === 'win32'
-      ? 'for /f "tokens=5" %a in (\'netstat -ano ^| findstr :3080 ^| findstr LISTENING\') do taskkill /F /PID %a'
-      : 'lsof -ti tcp:3080 2>/dev/null';
-    const out = execSync(cmd, { encoding: 'utf8', timeout: 3000, shell: true }).trim();
-    if (!out) return;
-    for (const pid of out.split('\n').filter(Boolean)) {
-      try { execSync(`kill -9 ${pid.trim()}`, { shell: true, stdio: 'ignore' }); } catch {}
+async function findExistingDsh() {
+  for (let port = DEFAULT_PORT; port < DEFAULT_PORT + PORT_SCAN_RANGE; port++) {
+    if (await isDshOnPort(port)) {
+      log(`found existing dsh on :${port}`);
+      return port;
     }
-  } catch { /* 没人占用就跳过 */ }
+  }
+  return null;
+}
+
+/**
+ * 从 3080 起递增找空闲端口。
+ * @returns {Promise<number>}
+ * @throws 3080–3180 全被占用时抛错
+ */
+async function findFreePort() {
+  for (let port = DEFAULT_PORT; port < DEFAULT_PORT + PORT_SCAN_RANGE; port++) {
+    if (await isPortFree(port)) {
+      log(`found free port :${port}`);
+      return port;
+    }
+  }
+  throw new Error(`No free port in range ${DEFAULT_PORT}-${DEFAULT_PORT + PORT_SCAN_RANGE - 1}`);
+}
+
+/**
+ * 轮询指定端口直到 dsh 就绪，超时 60s 抛错。
+ * @param {number} port
+ */
+function pollReady(port, startMs = Date.now()) {
+  return new Promise((resolve, reject) => {
+    if (Date.now() - startMs > POLL_TIMEOUT_MS) {
+      return reject(new Error(`Server on :${port} did not respond within ${POLL_TIMEOUT_MS / 1000}s`));
+    }
+    const req = http.get(`http://127.0.0.1:${port}`, res => { res.resume(); resolve(); });
+    req.setTimeout(POLL_MS, () => req.destroy());
+    req.once('error', () => setTimeout(() => pollReady(port, startMs).then(resolve, reject), POLL_MS));
+  });
 }
 
 /**
  * 启动一个 dsh 进程（detached，独立于 app 生命周期）。
- * @param {function|null} onOutput  回调，收到 dsh stdout/stderr 时触发
+ * @param {function|null} onOutput  dsh stdout/stderr 回调
+ * @param {number} port             dsh 监听端口
  */
-function startDsh(onOutput = null) {
-  // 优先直接 node 调 bin.js（1.5s），fallback 到 npx exec（12s）
+function startDsh(onOutput, port) {
   if (!dshEntry) dshEntry = dshEntryPath();
   const useDirect = dshEntry && fs.existsSync(dshEntry);
   const cmd = useDirect ? nodeBin() : npxBin();
   const args = useDirect
-    ? [dshEntry, 'web']
-    : ['--no-install', '@deepseek-ai/dsh', 'web'];
+    ? [dshEntry, 'web', '--port', String(port)]
+    : ['--no-install', '@deepseek-ai/dsh', 'web', '--port', String(port)];
   log('spawning dsh', useDirect ? '(direct node)' : '(npx)', cmd, args);
 
   dshProc = spawn(cmd, args, {
@@ -131,12 +144,11 @@ function startDsh(onOutput = null) {
     stdio: ['ignore', 'pipe', 'pipe'],
     env: buildEnv(),
     shell: false,
-    detached: true,   // dsh 独立存活，app 退出不杀
+    detached: true,
   });
-  dshProc.unref();     // 不让 dsh 阻止 app 退出
-  log('dsh spawned, pid=', dshProc.pid);
+  dshProc.unref();
+  log('dsh spawned, pid=', dshProc.pid, 'port=', port);
 
-  // 实时把 dsh 输出转发给回调（用于启动页显示状态）
   dshProc.stdout.on('data', d => {
     const s = d.toString().trim();
     if (s && onOutput) onOutput(s);
@@ -150,51 +162,59 @@ function startDsh(onOutput = null) {
 
 /**
  * 确保有一个可用的 dsh 服务。
- * 三种情况：
- *   1. dsh 已在 :3080 跑 → 直接复用（秒开）
- *   2. 别的程序占了 :3080（响应不含 dsh 特征）→ 抛错，让用户知道
- *   3. 没人占用 → 启动新的 dsh，轮询就绪
- * @returns {Promise<'reused'|'started'>}
- * @throws {Error} 端口被非 dsh 程序占用时
+ * - 扫到已运行的 dsh（任意端口）→ 复用
+ * - 没扫到 → 找空闲端口启动新的
+ * @returns {Promise<{mode: 'reused'|'started', port: number}>}
  */
 async function ensureDsh(onOutput = null) {
-  const portInUse = await isPortInUse();
-
-  if (portInUse) {
-    // 端口有响应，确认是不是 dsh
-    if (await isServerUp()) {
-      log('dsh already running on :3080 — reusing');
-      return 'reused';
-    }
-    // 端口被别的程序占了——不强杀，报错让用户处理
-    const msg = `Port ${DSH_PORT} is in use by another program (not dsh). ` +
-      `Please free it (e.g. lsof -ti tcp:${DSH_PORT} | xargs kill -9) and restart.`;
-    log('ERROR:', msg);
-    throw new Error(msg);
+  // 1. 扫描找已运行的 dsh
+  const existingPort = await findExistingDsh();
+  if (existingPort !== null) {
+    actualPort = existingPort;
+    log(`reusing existing dsh on :${actualPort}`);
+    return { mode: 'reused', port: actualPort };
   }
 
-  // 没人占用，启动新的 dsh
-  killPort3080();  // 兜底清理（极端情况：端口残留但 GET 不通）
-  await new Promise(r => setTimeout(r, 200));
-  startDsh(onOutput);
-  log('polling for :3080 ready…');
-  await pollReady();
-  log('server is ready');
-  return 'started';
+  // 2. 没找到 → 找空闲端口启动
+  actualPort = await findFreePort();
+  startDsh(onOutput, actualPort);
+  log('polling for dsh ready on :', actualPort);
+  await pollReady(actualPort);
+  log('dsh ready on :', actualPort);
+  return { mode: 'started', port: actualPort };
 }
 
 /**
- * 切换工作区：kill 旧 dsh → 用新目录重启 → 等就绪。
- * @param {string} dir  新的工作目录绝对路径
+ * 切换工作区：kill 旧 dsh → 用新目录+找新端口重启 → 等就绪。
+ * @param {string} dir  新的工作目录
+ * @param {function|null} onOutput
+ * @returns {Promise<number>} 新端口
  */
 async function switchWorkspace(dir, onOutput = null) {
   workspaceDir = dir;
   log('switching workspace to', dir);
-  killPort3080();
-  await new Promise(r => setTimeout(r, 250));
-  startDsh(onOutput);
-  await pollReady();
-  log('workspace switched, server ready');
+
+  // kill 旧的 dsh（如果是我们启动的）
+  if (dshProc) {
+    try { process.kill(-dshProc.pid); } catch {}
+    dshProc = null;
+  }
+
+  // 找空闲端口（旧的可能还没释放，递增找下一个）
+  actualPort = await findFreePort();
+  startDsh(onOutput, actualPort);
+  await pollReady(actualPort);
+  log('workspace switched, dsh on :', actualPort);
+  return actualPort;
 }
 
-module.exports = { DSH_URL, DSH_PORT, ensureDsh, switchWorkspace, isServerUp, killPort3080 };
+module.exports = {
+  dshUrl,
+  DEFAULT_PORT,
+  ensureDsh,
+  switchWorkspace,
+  isDshOnPort,
+  isPortFree,
+  findExistingDsh,
+  findFreePort,
+};

@@ -31,7 +31,7 @@ function progress(win, step, state, opts = {}) {
 /**
  * 运行完整启动校验。
  * @param {BrowserWindow} splashWin  启动页窗口
- * @param {function} openMain        打开主窗口的回调
+ * @param {function} openMain        打开主窗口的回调，接收 dsh 端口参数
  */
 async function runSetup(splashWin, openMain) {
   // Step 1: Node.js — 读 version，瞬间完成
@@ -49,7 +49,7 @@ async function runSetup(splashWin, openMain) {
   await ensureInstalled();
   progress(splashWin, 'install', 'done', { label: '@deepseek-ai/dsh  ✓', pct: 40 });
 
-  // Step 3: 启动/复用 dsh 服务
+  // Step 3: 启动/复用 dsh 服务（动态端口：复用已运行的，或找空闲端口启动）
   progress(splashWin, 'start', 'active', { label: 'Starting server…', pct: 50 });
   let result;
   try {
@@ -57,15 +57,17 @@ async function runSetup(splashWin, openMain) {
       progress(splashWin, 'start', 'active', { msg: stdout.slice(0, 80), pct: 60 });
     });
   } catch (e) {
-    // 端口被别的程序占用 / dsh 启动失败
     progress(splashWin, 'start', 'error', { msg: e.message });
     throw e;
   }
-  progress(splashWin, 'start', 'done', { label: result === 'reused' ? 'Server already running ✓' : 'Server ready ✓', pct: 90 });
+  progress(splashWin, 'start', 'done', {
+    label: result.mode === 'reused' ? `Server reused on :${result.port} ✓` : `Server ready on :${result.port} ✓`,
+    pct: 90,
+  });
 
-  // Step 4: 打开主窗口
+  // Step 4: 打开主窗口（传入实际端口）
   progress(splashWin, 'ready', 'done', { label: 'Opening UI', pct: 100 });
-  openMain();
+  openMain(result.port);
 }
 
 module.exports = { runSetup, progress };
