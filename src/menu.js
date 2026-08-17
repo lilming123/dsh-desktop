@@ -13,7 +13,7 @@
 const { app, Menu, dialog } = require('electron');
 const { t, getLang, setLang, getSupportedLangs } = require('./i18n');
 
-const LANG_LABELS = { 'en': 'English', 'zh': '简体中文', 'zh-TW': '繁體中文' };
+const LANG_LABELS = { 'en': 'English', 'zh': '简体中文' };
 
 /** 把文本注入到当前激活的输入元素 */
 function injectToInput(mainWin, text) {
@@ -64,13 +64,18 @@ function buildMenu(mainWin, splashWin, onOpenWorkspace) {
   const currentLang = getLang();
 
   // Language 子菜单（带 ✓ 标记当前选中）
+  // Language 子菜单（带 ✓ 标记当前选中）
   const langSubmenu = getSupportedLangs().map(lang => ({
     label: (lang === currentLang ? '✓ ' : '   ') + LANG_LABELS[lang],
     click: () => {
-      setLang(lang);
-      // 重建菜单 + 通知启动页
-      buildMenu(mainWin, splashWin, onOpenWorkspace);
-      splashWin?.webContents?.send('lang-changed', lang);
+      try {
+        setLang(lang);
+        // 重建菜单以刷新语言标签（如 File/Edit 等）
+        buildMenu(mainWin, splashWin, onOpenWorkspace);
+      } catch (e) {
+        // 语言已切换成功；UI 局部刷新失败不影响功能
+        console.error('[menu] lang switch UI refresh failed:', e && e.message);
+      }
     },
   }));
 

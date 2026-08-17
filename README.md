@@ -18,7 +18,7 @@ Uses an Electron WebView to load the locally-running dsh service. On launch, it 
 - **Detached process** — dsh runs detached; closing the app doesn't kill the service, next launch is instant
 - **Fast startup** — calls the cached `bin.js` directly (~1.5s) instead of `npx exec` (~12s)
 - **Workspace switching** — `File → Open Folder as Workspace…` restarts dsh with a new working directory
-- **Multilingual** — English, Simplified Chinese, Traditional Chinese; switchable via menu, persisted
+- **Multilingual** — English and Simplified Chinese; switchable via menu, persisted
 - **Cross-platform** — macOS (arm64/x64) + Windows (x64 NSIS installer)
 
 ## Install
@@ -53,7 +53,7 @@ After launching:
 3. **Menu bar**
    - `File → Open Folder as Workspace…` (⌘⇧O / Ctrl+Shift+O) — pick a folder, dsh restarts with it
    - `File → Add File…` (⌘O / Ctrl+O) — pick files, paths inject into dsh input
-   - `Language → English / 简体中文 / 繁體中文` — switch UI language, instant effect
+   - `Language → English / 简体中文` — switch UI language, instant effect
 
 ### Reopening after close
 
@@ -98,7 +98,7 @@ dsh-desktop/
 └── src/
     ├── paths.js      # Cross-platform node/npx/dsh path resolution
     ├── logger.js     # Lightweight logger (stdout + ~/.dsh-desktop.log)
-    ├── i18n.js       # Internationalization (en/zh/zh-TW, persisted)
+    ├── i18n.js       # Internationalization (en/zh, persisted)
     ├── dsh.js        # dsh lifecycle (dynamic port / reuse / start / workspace)
     ├── install.js    # dsh install detection (marker + FS fast check)
     ├── menu.js       # App menu (File / Language / Edit / View / Window)
@@ -106,7 +106,7 @@ dsh-desktop/
     └── locales/      # Language packs
         ├── en.json
         ├── zh.json
-        └── zh-TW.json
+        └── 
 ```
 
 ## Development
@@ -132,7 +132,7 @@ tail -f ~/.dsh-desktop.log
 | Port 3080 occupied | Auto-increment from 3080 to find free port | Avoids conflict, seamless to user |
 | Repeated dsh startup | Scan ports for running dsh (verify response signature) | Cross-port reuse, instant connect |
 | App quit kills dsh | `detached: true` + `unref()` | dsh survives, next launch instant |
-| Multilingual | `src/i18n.js` + `locales/*.json` + menu switch | Supports en/zh/zh-TW, persisted |
+| Multilingual | `src/i18n.js` + `locales/*.json` + menu switch | Supports en/zh, persisted |
 
 ## License
 

@@ -49,9 +49,13 @@ function createSplash() {
   return splashWin;
 }
 
-// 语言切换时：推送新字典给 splash + 重建菜单
+// 语言切换时：推送新字典给启动页（若还活着）+ 菜单已在 menu.js 内重建
 onLangChange(() => {
-  splashWin?.webContents?.send('i18n-dict', getDict());
+  try {
+    if (splashWin && !splashWin.isDestroyed() && splashWin.webContents) {
+      splashWin.webContents.send('i18n-dict', getDict());
+    }
+  } catch (_) { /* splash 已销毁，忽略 */ }
 });
 
 /**

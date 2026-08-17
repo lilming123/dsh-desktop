@@ -18,7 +18,7 @@
 - **独立存活** — dsh 以 detached 进程运行，关闭 app 不杀服务，下次打开秒连
 - **快速启动** — 优先用 `node bin.js` 直接调用（~1.5s），绕过 `npx exec` 的 ~12s 开销
 - **工作区切换** — `文件 → 打开文件夹作为工作区…` 选文件夹后重启 dsh 并切到新目录
-- **多语种** — 英语、简体中文、繁体中文，菜单可切换，语言持久化
+- **多语种** — 英语和简体中文，菜单可切换，语言持久化
 - **双平台** — macOS（arm64/x64）+ Windows（x64 NSIS 安装包）
 
 ## 安装
@@ -53,7 +53,7 @@ npm run pack:win    # 产出 dist/win-unpacked/DeepSeek Harness.exe
 3. **菜单栏**
    - `文件 → 打开文件夹作为工作区…`（⌘⇧O / Ctrl+Shift+O）— 选文件夹作为工作区，dsh 重启并切换
    - `文件 → 添加文件…`（⌘O / Ctrl+O）— 选文件，路径注入到 dsh 输入框
-   - `语言 → English / 简体中文 / 繁體中文` — 切换界面语言，立即生效
+   - `语言 → English / 简体中文` — 切换界面语言，立即生效
 
 ### 关闭后重新打开
 
@@ -98,7 +98,7 @@ dsh-desktop/
 └── src/
     ├── paths.js      # 平台无关的 node/npx/dsh 路径解析
     ├── logger.js     # 轻量日志器（stdout + ~/.dsh-desktop.log）
-    ├── i18n.js       # 国际化模块（en/zh/zh-TW，语言持久化）
+    ├── i18n.js       # 国际化模块（en/zh，语言持久化）
     ├── dsh.js        # dsh 服务生命周期（动态端口/复用/启动/工作区切换）
     ├── install.js    # dsh 安装检测与安装（marker + FS 快速检查）
     ├── menu.js       # 应用菜单（文件/语言/编辑/视图/窗口）
@@ -106,7 +106,7 @@ dsh-desktop/
     └── locales/      # 语言包
         ├── en.json
         ├── zh.json
-        └── zh-TW.json
+        └── 
 ```
 
 ## 开发
@@ -132,7 +132,7 @@ tail -f ~/.dsh-desktop.log
 | 端口 3080 被占 | 从 3080 起递增找空闲端口 | 避免冲突，用户无感 |
 | 重复启动 dsh | 扫端口找已运行 dsh（验证响应特征） | 支持跨端口复用，秒开 |
 | 关 app 杀 dsh | `detached: true` + `unref()` | dsh 独立存活，下次秒连 |
-| 多语种 | `src/i18n.js` + `locales/*.json` + 菜单切换 | 支持 en/zh/zh-TW，持久化 |
+| 多语种 | `src/i18n.js` + `locales/*.json` + 菜单切换 | 支持 en/zh，持久化 |
 
 ## License
 

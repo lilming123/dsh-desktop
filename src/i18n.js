@@ -1,7 +1,7 @@
 /**
  * i18n.js — 轻量国际化模块
  *
- * 支持：英语 (en)、简体中文 (zh)、繁体中文 (zh-TW)
+ * 支持：英语 (en)、简体中文 (zh)
  * 语言文件在 src/locales/<lang>.json
  *
  * 用法：
@@ -15,7 +15,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const SUPPORTED_LANGS = ['en', 'zh', 'zh-TW'];
+const SUPPORTED_LANGS = ['en', 'zh'];
 const LANG_FILE = path.join(os.homedir(), '.dsh-desktop.lang');
 const DEFAULT_LANG = detectDefaultLang();
 
@@ -26,7 +26,6 @@ const listeners = new Set();
 /** 根据系统语言推断默认语言 */
 function detectDefaultLang() {
   const locale = (process.env.LANG || process.env.LC_ALL || process.env.LC_MESSAGES || 'en').toLowerCase();
-  if (locale.startsWith('zh-tw') || locale.startsWith('zh_hk')) return 'zh-TW';
   if (locale.startsWith('zh')) return 'zh';
   return 'en';
 }
