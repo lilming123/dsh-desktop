@@ -70,10 +70,32 @@ function buildMenu(mainWin, splashWin, onOpenWorkspace) {
     click: () => {
       try {
         setLang(lang);
-        // 重建菜单以刷新语言标签（如 File/Edit 等）
+        // 重建菜单以刷新语言标签
         buildMenu(mainWin, splashWin, onOpenWorkspace);
+        // 通知 dsh WebUI 切换语言（让页面内的下拉菜单也跟着变）
+        if (mainWin && !mainWin.isDestroyed() && mainWin.webContents) {
+          mainWin.webContents.executeJavaScript(`
+            (function() {
+              // 通过 dsh 的 cordis root 找到 locale service 并调用 setLocale
+              const target = ${JSON.stringify(lang)};
+              try {
+                const root = (globalThis.__DSH_BOOT__ && globalThis.__cordis_root)
+                  || (window.__cordis_root)
+                  || null;
+                if (root && root.locale && typeof root.locale.setLocale === 'function') {
+                  const snap = root.locale.getLocale && root.locale.getLocale();
+                  const cand = (snap && snap.locales) || [];
+                  const match = cand.find(l => (l.id || '').toLowerCase().startsWith(target));
+                  root.locale.setLocale(match ? match.id : target);
+                  return;
+                }
+                // Fallback：更新 <html lang>，让上游 MutationObserver 感知
+                document.documentElement.setAttribute('lang', target);
+              } catch (e) {}
+            })();
+          `).catch(() => {});
+        }
       } catch (e) {
-        // 语言已切换成功；UI 局部刷新失败不影响功能
         console.error('[menu] lang switch UI refresh failed:', e && e.message);
       }
     },

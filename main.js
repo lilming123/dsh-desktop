@@ -11,13 +11,13 @@
 
 'use strict';
 
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path');
 const { log } = require('./src/logger');
 const { buildMenu } = require('./src/menu');
 const { runSetup } = require('./src/setup');
 const { switchWorkspace, dshUrl } = require('./src/dsh');
-const { getDict, onLangChange } = require('./src/i18n');
+const { getDict, onLangChange, setLang, getLang, getSupportedLangs } = require('./src/i18n');
 
 let splashWin = null;
 let mainWin   = null;
@@ -58,6 +58,33 @@ onLangChange(() => {
   } catch (_) { /* splash 已销毁，忽略 */ }
 });
 
+// dsh WebUI 内切换语言 → 同步到 Electron 菜单
+ipcMain.on('dsh-lang-changed', (_e, lang) => {
+  if (!getSupportedLangs().includes(lang)) return;
+  if (lang === getLang()) return; // 无变化
+  log('dsh->menu lang sync:', lang);
+  try {
+    setLang(lang);           // 触发 onLangChange，菜单会在 menu.js click 外的路径重建
+    // menu.js 的 click 回调不会被 dsh 触发，因此这里主动重建一次菜单
+    if (mainWin && !mainWin.isDestroyed()) {
+      // Open Folder 回调闭包已经绑在 mainWin 上，重建时复用同一份逻辑
+      const rebuildOpen = async (folder) => {
+        if (!mainWin) return;
+        mainWin.webContents.loadURL('about:blank');
+        mainWin.webContents.executeJavaScript(
+          `document.body.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100vh;font-family:-apple-system,sans-serif;color:#666">Switching workspace…</div>'`
+        ).catch(() => {});
+        const newPort = await switchWorkspace(folder);
+        dshPort = newPort;
+        mainWin.webContents.loadURL(dshUrl());
+      };
+      buildMenu(mainWin, splashWin, rebuildOpen);
+    }
+  } catch (e) {
+    log('dsh->menu lang sync failed:', e && e.message);
+  }
+});
+
 /**
  * 创建主窗口（加载 dsh Web UI）。
  * @param {number} port  dsh 实际监听端口
@@ -72,20 +99,53 @@ function createMain(port) {
     minWidth: 900, minHeight: 600,
     backgroundColor: '#ffffff',
     show: false,
-    webPreferences: { contextIsolation: true, nodeIntegration: false },
+    webPreferences: {
+      preload: path.join(__dirname, 'preload-main.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
   });
 
   mainWin.loadURL(url);
   mainWin.once('ready-to-show', () => { splashWin?.close(); mainWin.show(); });
   mainWin.on('closed', () => { mainWin = null; });
 
-  // 注入滚动条样式
+  // 注入滚动条样式 + dsh 语言监听脚本
   mainWin.webContents.on('did-finish-load', () => {
     mainWin.webContents.insertCSS(
       '::-webkit-scrollbar{width:6px;height:6px}' +
       '::-webkit-scrollbar-track{background:transparent}' +
       '::-webkit-scrollbar-thumb{background:rgba(0,0,0,.18);border-radius:4px}'
     );
+
+    // 注入脚本：读取 dsh HTML lang / html/body class / localStorage 里的 locale 标记
+    // dsh 的 <html lang="..."> 会随语言切换更新，用 MutationObserver 监听最稳
+    mainWin.webContents.executeJavaScript(`
+      (function() {
+        // 把 dsh 的语言值（en/zh-CN/zh-Hans 等）归一化到我们支持的 en/zh
+        function normalize(l) {
+          if (!l) return null;
+          l = String(l).toLowerCase();
+          if (l.startsWith('zh')) return 'zh';
+          if (l.startsWith('en')) return 'en';
+          return null;
+        }
+        let last = null;
+        function report() {
+          const lang = normalize(document.documentElement.getAttribute('lang'));
+          if (lang && lang !== last) {
+            last = lang;
+            window.postMessage({ __dshDesktop: 'lang-change', lang }, '*');
+          }
+        }
+        // 首次
+        report();
+        // 监听 <html lang="..."> 变化
+        new MutationObserver(report).observe(document.documentElement, {
+          attributes: true, attributeFilter: ['lang'],
+        });
+      })();
+    `).catch(err => log('inject dsh-lang watcher failed:', err && err.message));
   });
 
   // 菜单：Open Folder 会调 switchWorkspace 重启 dsh，拿到新端口后 reload

@@ -22,6 +22,7 @@
     "files": [
       "main.js",
       "preload.js",
+      "preload-main.js",
       "splash.html",
       "icon.png",
       "src/**/*"
