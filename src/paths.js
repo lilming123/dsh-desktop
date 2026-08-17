@@ -1,76 +1,88 @@
 /**
- * paths.js — 平台无关的运行时路径解析
+ * paths.js — Cross-platform runtime path resolution.
  *
- * Electron app bundle 启动时 PATH 常被精简，node / npx 需要显式定位。
- * 本模块同时管理 app 写在 $DSH_HOME 下的所有位置：dsh-api 插件安装目录、
- * `--patch` 覆盖文件、以及让插件反向找到本 host 的 companion 发现文件。
+ * Electron app bundles start with a stripped PATH, so `node` / `npx` need to
+ * be located explicitly. This module also owns every location the app writes
+ * under `$DSH_HOME`: the `dsh-api` plugin install directory, the loader patch
+ * file, and the companion discovery file the plugin uses to find us.
+ *
+ * The exported functions are pure — they compute paths, they don't create
+ * anything. Callers do the mkdirp when they actually write.
  */
 
 'use strict';
 
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
+const { homePath } = require('./fsx');
 
 const isWin = process.platform === 'win32';
 
-/** dsh HOME（DSH_HOME 环境变量可覆盖，默认 ~/.dsh） */
+/** dsh HOME (env `DSH_HOME` overrides, default `~/.dsh`). */
 function dshHome() {
-  return process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
+  return process.env.DSH_HOME || homePath('.dsh');
 }
 
-/** 桌面版 spawn 的 dsh 用的 profile 目录（`--profile web`） */
+/** dsh web profile directory used when the desktop app spawns dsh. */
 function dshProfileDir() {
   return path.join(dshHome(), 'profiles', 'web');
 }
 
-/** 打包插件在 profile 内的安装目录（patch 里 name 相对指向这里） */
+/** Where the bundled `dsh-api` plugin file is copied to inside the profile. */
 function apiPluginDir() {
   return path.join(dshProfileDir(), 'dsh-api');
 }
 
-/** dsh 启动时通过 `--patch` 传入的覆盖文件路径 */
+/** The `--patch` overlay file that inserts the plugin into the loader graph. */
 function apiPluginPatchFile() {
   return path.join(dshProfileDir(), 'dsh-api.patch.yml');
 }
 
 /**
- * Companion 发现文件：主进程启动本地 HTTP 服务后写入，插件读文件后把
- * 桌面专属请求代理过来。名字里去掉了「desktop」——它只是「dsh-api 的
- * 一个 host companion」，不排除以后是别的 host。
+ * Companion discovery file. The desktop process writes it after starting the
+ * companion HTTP service; the plugin reads it to proxy companion-only routes.
  */
 function companionInfoFile() {
   return path.join(dshHome(), 'dsh-api-companion.json');
 }
 
-/** 应用打包内自带的 dsh-api 插件源码（dev 是仓库目录，打包后位于 app.asar 内） */
+/** Bundled plugin source (dev: repo dir; production: inside `app.asar`). */
 function bundledPluginFile() {
   return path.join(__dirname, '..', 'dsh-plugin', 'index.mjs');
 }
 
-/** node 可执行文件候选，按优先级排列 */
+/** Bundled patch template (installed alongside the plugin every launch). */
+function bundledPluginPatchFile() {
+  return path.join(__dirname, '..', 'dsh-plugin', 'patch.yml');
+}
+
+/** node executable candidates, in preference order. */
 function nodeBinCandidates() {
-  const home = os.homedir();
-  const user = os.userInfo().username;
+  const home = homePath();
   return isWin
     ? [`${home}\\.hermes\\node\\node.exe`, `${home}\\AppData\\Roaming\\npm\\node.exe`, 'node.exe']
-    : [`/Users/${user}/.hermes/node/bin/node`, '/usr/local/bin/node', '/opt/homebrew/bin/node', 'node'];
+    : [`${home}/.hermes/node/bin/node`, '/usr/local/bin/node', '/opt/homebrew/bin/node', 'node'];
 }
 
-/** npx 可执行文件候选 */
+/** npx executable candidates. */
 function npxBinCandidates() {
-  const home = os.homedir();
-  const user = os.userInfo().username;
+  const home = homePath();
   return isWin
     ? [`${home}\\.hermes\\node\\npx.cmd`, `${home}\\AppData\\Roaming\\npm\\npx.cmd`, 'npx.cmd']
-    : [`/Users/${user}/.hermes/node/bin/npx`, '/usr/local/bin/npx', '/opt/homebrew/bin/npx', 'npx'];
+    : [`${home}/.hermes/node/bin/npx`, '/usr/local/bin/npx', '/opt/homebrew/bin/npx', 'npx'];
 }
 
-/** 挑第一个真实存在的候选；找不到就 fallback 到最后一个（裸命令名，交给 PATH） */
+/**
+ * First existing candidate; falls back to the last (a bare command name that
+ * we trust the runtime PATH to resolve). This keeps the app usable even when
+ * none of the well-known install prefixes are present.
+ */
 function resolveBin(candidates) {
   for (const c of candidates) {
-    if (!c.includes(path.sep) && !c.includes('/') && !(isWin && c.includes('\\'))) return c;
-    try { if (fs.existsSync(c)) return c; } catch { /* ignore */ }
+    // Bare command names (no separator) are trusted to the system PATH.
+    const bare = !c.includes(path.sep) && !c.includes('/') && !(isWin && c.includes('\\'));
+    if (bare) return c;
+    try { if (fs.existsSync(c)) return c; } catch { /* ignore stat errors */ }
   }
   return candidates[candidates.length - 1];
 }
@@ -79,13 +91,13 @@ function nodeBin() { return resolveBin(nodeBinCandidates()); }
 function npxBin()  { return resolveBin(npxBinCandidates()); }
 
 /**
- * 定位 npx 缓存里 @deepseek-ai/dsh 的入口（lib/bin.js）。
- * 直接用 node 跑它，比 `npx exec` 快约 8 倍（~1.5s vs ~12s）。
- * @returns {string|null} 绝对路径，找不到返回 null
+ * Locate the cached `@deepseek-ai/dsh` entry (`lib/bin.js`) inside
+ * `~/.npm/_npx`. Running it directly with node is ~8× faster than `npx exec`.
+ * @returns {string|null} absolute path, or `null` if not cached yet.
  */
 function dshEntryPath() {
   try {
-    const cacheDir = path.join(os.homedir(), '.npm', '_npx');
+    const cacheDir = homePath('.npm', '_npx');
     if (!fs.existsSync(cacheDir)) return null;
     for (const d of fs.readdirSync(cacheDir)) {
       const bin = path.join(cacheDir, d, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js');
@@ -100,5 +112,6 @@ module.exports = {
   nodeBin, npxBin, dshEntryPath,
   dshHome, dshProfileDir,
   apiPluginDir, apiPluginPatchFile,
-  companionInfoFile, bundledPluginFile,
+  companionInfoFile,
+  bundledPluginFile, bundledPluginPatchFile,
 };

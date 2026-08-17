@@ -1,23 +1,25 @@
 /**
  * capabilities.js — Unified capability layer (Electron main process).
  *
- * Two callers share this module: the menu (`src/menu.js`) and the companion
- * HTTP service (`src/companion.js`). It offers:
+ * Shared by two callers:
+ *   - `src/menu.js`         (menu clicks)
+ *   - `src/companion.js`    (companion HTTP endpoints proxied by the plugin)
  *
+ * Offered capabilities:
  *   - Workspace: pick a directory / open by path (restarts dsh with new cwd)
  *   - Files:     multi-pick then inject paths into the dsh input
- *   - Language:  delegated to the dsh-api plugin (POST /dsh-api/language)
+ *   - Language:  delegated to the `dsh-api` plugin
  *   - Window:    show / reload / open in default browser
  *   - State:     dsh port, workspace dir, window visibility
  *
- * The important design rule of this refactor:
- * **We never touch dsh internals directly.** Language and workspace list live
- * inside dsh — this module reaches them only through the `dsh-api` plugin over
- * HTTP. The only knobs here are the Electron-shell things dsh itself cannot
+ * Invariant: **we never touch dsh internals directly.** Language and
+ * workspace-list live inside dsh — this module reaches them only through the
+ * plugin over HTTP. The only knobs here are Electron-shell things dsh cannot
  * do: file dialogs, spawning / restarting dsh, focusing the window.
  *
- * Runtime state (windows, port, workspace) is injected by main.js via
- * `setContext()`.
+ * Runtime state (windows, port, workspace) is injected by main.js through
+ * `setContext()`; this is the single point that also propagates `dshPort` to
+ * the plugin client, so there is exactly one authoritative source.
  */
 
 'use strict';
@@ -27,25 +29,29 @@ const fs = require('fs');
 const { t, setLang } = require('./i18n');
 const { switchWorkspace, dshUrl: dshUrlOf } = require('./dsh');
 const pluginClient = require('./pluginClient');
-
-const LANG_LABELS = { en: 'English', zh: '简体中文' };
+const { log } = require('./logger');
 
 // ── Runtime state (populated by main.js) ─────────────────────────────────────
 
 const state = {
   mainWin: null,      // BrowserWindow
   splashWin: null,    // BrowserWindow | null
-  dshPort: 3080,      // dsh actual listening port
-  workspace: null,    // Current workspace directory (as seen by this app)
+  dshPort: 3080,      // dsh's actual listening port
+  workspace: null,    // Current workspace directory (as tracked by this app)
 };
 
-/** Inject / update runtime state (main.js is the source of truth). */
+/**
+ * Inject / update runtime state (main.js is the source of truth).
+ * If `dshPort` changes, propagate it to the plugin client here — this is the
+ * ONE place that keeps the client's target port in sync with reality.
+ */
 function setContext(partial) {
+  if (!partial) return;
   Object.assign(state, partial);
-  if (partial && typeof partial.dshPort === 'number') pluginClient.setPort(partial.dshPort);
+  if (typeof partial.dshPort === 'number') pluginClient.setPort(partial.dshPort);
 }
 
-/** State snapshot (pure JSON) shared with the companion HTTP surface. */
+/** JSON snapshot exposed to the companion HTTP surface. */
 function getState() {
   const mainWin = state.mainWin;
   return {
@@ -63,28 +69,57 @@ function getState() {
 // it to refresh the companion discovery file and rebuild the menu.
 let onStateChanged = null;
 function setOnStateChanged(fn) { onStateChanged = fn; }
-function notifyChanged() { try { onStateChanged && onStateChanged(); } catch (_) { /* swallow */ } }
+function notifyChanged() {
+  try { onStateChanged && onStateChanged(); }
+  catch (e) { log('capabilities: onStateChanged threw', e && e.message); }
+}
 
 // ── Workspace ────────────────────────────────────────────────────────────────
+
+/**
+ * Escape a string for safe embedding as an HTML text node inside an inline
+ * script. NOT a general-purpose HTML escaper — only handles the characters
+ * that can escape the interpolation context in `openWorkspaceAt`.
+ */
+function htmlEscape(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
 
 /** Switch to a directory as the workspace: restart dsh, process cwd changes. */
 async function openWorkspaceAt(dir) {
   if (!state.mainWin || state.mainWin.isDestroyed()) return { ok: false, error: 'no main window' };
 
-  // 1. Show a placeholder page while dsh is restarting
+  // 1. Show a placeholder page while dsh is restarting. dir goes through:
+  //    - JSON.stringify(): safe embedding inside the JS expression `${...}`
+  //    - htmlEscape():     applied after the JS eval, inside .innerHTML
+  //    …but easier: build the HTML string in JS, embed the finished string as
+  //    a JSON literal so no interpolation quoting concerns remain.
+  const label = t('menu.switchingWorkspace');
+  const html =
+    '<div style="text-align:center">' +
+      '<div style="font-size:32px;margin-bottom:12px">🔄</div>' +
+      `<div>${htmlEscape(label)}</div>` +
+      `<div style="font-size:12px;color:#aaa;margin-top:6px">${htmlEscape(dir)}</div>` +
+    '</div>';
+  const script = `
+    document.body.style.cssText='margin:0;display:flex;align-items:center;justify-content:center;height:100vh;font-family:-apple-system,sans-serif;color:#666;background:#fff';
+    document.body.innerHTML=${JSON.stringify(html)};
+  `;
   state.mainWin.webContents.loadURL('about:blank');
-  state.mainWin.webContents.executeJavaScript(
-    `document.body.style.cssText='margin:0;display:flex;align-items:center;justify-content:center;height:100vh;font-family:-apple-system,sans-serif;color:#666;background:#fff';` +
-    `document.body.innerHTML='<div style="text-align:center"><div style="font-size:32px;margin-bottom:12px">🔄</div><div>${t('menu.switchingWorkspace')}</div><div style="font-size:12px;color:#aaa;margin-top:6px">${String(dir).replace(/[<>&"]/g, '')}</div></div>'`
-  ).catch(() => {});
+  state.mainWin.webContents.executeJavaScript(script).catch(() => { /* fine */ });
 
   // 2. Restart dsh (kill old + pick free port + spawn + wait for ready)
   const newPort = await switchWorkspace(dir);
-  state.dshPort = newPort;
-  state.workspace = dir;
-  pluginClient.setPort(newPort);
 
-  // 3. Load the new dsh UI
+  // 3. Publish new state (setContext also updates pluginClient's port).
+  setContext({ dshPort: newPort, workspace: dir });
+
+  // 4. Load the new dsh UI, then notify listeners so companion + menu refresh.
   state.mainWin.webContents.loadURL(dshUrlOf());
   notifyChanged();
   return { ok: true, port: newPort, workspace: dir };
@@ -115,10 +150,15 @@ async function openWorkspaceRequested(dir) {
 
 // ── Files / input injection ──────────────────────────────────────────────────
 
-/** Inject text into whichever input element is currently focused. */
+/**
+ * Inject text into whichever input element is currently focused.
+ * The selector is tuned for dsh's Web UI (textarea / contenteditable / text
+ * input). Values are passed as a `JSON.stringify`'d literal, so any input
+ * text — quotes, backslashes, newlines — is safe.
+ */
 function pasteToInput(text) {
   if (!state.mainWin?.webContents) return { ok: false, error: 'no main window' };
-  state.mainWin.webContents.executeJavaScript(`
+  const script = `
     (function() {
       const el = document.querySelector('textarea, [contenteditable="true"], input[type="text"]');
       if (!el) return;
@@ -132,7 +172,8 @@ function pasteToInput(text) {
         document.execCommand('insertText', false, v);
       }
     })();
-  `).catch(() => {});
+  `;
+  state.mainWin.webContents.executeJavaScript(script).catch(() => { /* fine */ });
   return { ok: true };
 }
 
@@ -152,25 +193,28 @@ async function pickFilesAndInject() {
 
 /**
  * Switch UI language.
- * Sync: local i18n switches first so the menu label + splash text update
- *       immediately (matters when dsh is still starting or was reused
- *       without the plugin).
- * Async: the dsh-api plugin does the authoritative write via the `settings`
- *        service. dsh clients then refresh live. We never touch settings.yaml
- *        ourselves — that's dsh's own concern.
+ *
+ * Local first: swap our i18n dict immediately so the menu label + splash text
+ * update without waiting for the network. Then ask the plugin to make the
+ * change authoritative in dsh.
+ *
+ * The returned envelope reflects the authoritative state — if the plugin
+ * cannot ack, `ok: false` and `via: 'local-only'`. Menu labels will still
+ * look correct locally, but dsh's own clients won't refresh. Callers can
+ * surface this to the user (toast, etc.) if they care.
  */
 async function setLanguage(lang) {
-  if (!['en', 'zh'].includes(lang)) return { ok: false, error: 'unsupported language: ' + lang };
-  try { setLang(lang); } catch (_) { /* i18n load failure isn't fatal */ }
+  const supported = ['en', 'zh'];
+  if (!supported.includes(lang)) return { ok: false, error: 'unsupported language: ' + lang };
+  try { setLang(lang); } catch (e) { log('capabilities: local setLang failed', e && e.message); }
 
-  const ok = await pluginClient.setLanguage(lang);
-  return { ok: true, applied: ok ? 'plugin' : 'local-only' };
+  const acked = await pluginClient.setLanguage(lang);
+  if (acked) return { ok: true, via: 'plugin' };
+  return { ok: false, via: 'local-only', error: 'dsh-api plugin unavailable' };
 }
 
-/** Recent-workspaces list for the menu — delegated to the plugin. */
-async function fetchWorkspaceList() {
-  return pluginClient.listWorkspaces();
-}
+/** Workspace-registry list, delegated to the plugin (null when unavailable). */
+async function fetchWorkspaceList() { return pluginClient.listWorkspaces(); }
 
 // ── Window / app ─────────────────────────────────────────────────────────────
 
@@ -189,7 +233,7 @@ function reloadWindow() {
 }
 
 function openInBrowser() {
-  shell.openExternal(dshUrlOf()).catch(() => {});
+  shell.openExternal(dshUrlOf()).catch((e) => log('openExternal failed:', e && e.message));
   return { ok: true };
 }
 
@@ -199,19 +243,23 @@ function quitApp() {
 }
 
 module.exports = {
+  // Wiring
   setContext,
-  getState,
   setOnStateChanged,
+  getState,
+  // Workspace
   openWorkspaceAt,
   openWorkspaceDialog,
   openWorkspaceRequested,
+  // Files
   pasteToInput,
   pickFilesAndInject,
+  // Language
   setLanguage,
   fetchWorkspaceList,
+  // Window / app
   showWindow,
   reloadWindow,
   openInBrowser,
   quitApp,
-  LANG_LABELS,
 };

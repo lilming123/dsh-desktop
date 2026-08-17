@@ -19,14 +19,15 @@
 
 'use strict';
 
-const fs = require('fs');
-const os = require('os');
 const path = require('path');
+const { readTextSafe, writeTextAtomic, homePath, readJsonSafe } = require('./fsx');
 const pluginClient = require('./pluginClient');
 const { log } = require('./logger');
 
 const SUPPORTED_LANGS = ['en', 'zh'];
-const LANG_FILE = path.join(os.homedir(), '.dsh-desktop.lang');
+/** Human-readable labels for the language switcher menu. */
+const LANG_LABELS = { en: 'English', zh: '简体中文' };
+const LANG_FILE = homePath('.dsh-desktop.lang');
 const DEFAULT_LANG = detectDefaultLang();
 
 const POLL_INTERVAL_MS = 3000;
@@ -36,42 +37,35 @@ let dict = loadDict(currentLang);
 const listeners = new Set();
 let pollTimer = null;
 
-/** Detect from LANG / LC_ALL / LC_MESSAGES; default en. */
+/** Detect from LANG / LC_ALL / LC_MESSAGES; default 'en'. */
 function detectDefaultLang() {
   const locale = (process.env.LANG || process.env.LC_ALL || process.env.LC_MESSAGES || 'en').toLowerCase();
-  if (locale.startsWith('zh')) return 'zh';
-  return 'en';
+  return locale.startsWith('zh') ? 'zh' : 'en';
 }
 
 /** Restore last-known-good language from the local memory file (best-effort). */
 function loadInitialLang() {
-  try {
-    const saved = fs.readFileSync(LANG_FILE, 'utf8').trim();
-    if (SUPPORTED_LANGS.includes(saved)) return saved;
-  } catch { /* file missing or unreadable, that's fine */ }
+  const saved = readTextSafe(LANG_FILE, '').trim();
+  if (SUPPORTED_LANGS.includes(saved)) return saved;
   return DEFAULT_LANG;
 }
 
 /** Load a locale dictionary from disk, falling back to en, then empty. */
 function loadDict(lang) {
-  try {
-    return JSON.parse(fs.readFileSync(path.join(__dirname, 'locales', `${lang}.json`), 'utf8'));
-  } catch {
-    try { return JSON.parse(fs.readFileSync(path.join(__dirname, 'locales', 'en.json'), 'utf8')); }
-    catch { return {}; }
-  }
+  const p = path.join(__dirname, 'locales', `${lang}.json`);
+  const d = readJsonSafe(p, null);
+  if (d) return d;
+  return readJsonSafe(path.join(__dirname, 'locales', 'en.json'), {}) || {};
 }
 
 /** Persist local language memory (for the next launch, before dsh is up). */
-function saveLang(lang) {
-  try { fs.writeFileSync(LANG_FILE, lang); } catch { /* not fatal */ }
-}
+function saveLang(lang) { writeTextAtomic(LANG_FILE, lang); }
 
 /**
  * Translate a dotted key with `{{var}}` interpolation.
  * @param {string} key   Dotted path like `steps.start.ready`
  * @param {object} vars  Interpolation vars, e.g. `{ port: 3081 }`
- * @returns {string}     Original key when missing
+ * @returns {string}     The original key on miss (loud in the UI)
  */
 function t(key, vars = {}) {
   let val = dict;
@@ -88,6 +82,7 @@ function t(key, vars = {}) {
 
 function getLang() { return currentLang; }
 function getSupportedLangs() { return [...SUPPORTED_LANGS]; }
+function getLangLabels() { return { ...LANG_LABELS }; }
 function getDict() { return dict; }
 
 /** Switch language: swap dict, persist local memory, notify listeners. */
@@ -96,28 +91,41 @@ function setLang(lang) {
   currentLang = lang;
   dict = loadDict(lang);
   saveLang(lang);
-  listeners.forEach(fn => { try { fn(lang); } catch (e) { log('i18n listener error:', e && e.message); } });
+  for (const fn of listeners) {
+    try { fn(lang); }
+    catch (e) { log('i18n listener error:', e && e.message); }
+  }
 }
 
 function onLangChange(fn) { listeners.add(fn); }
 
 /**
- * Start polling the dsh-api plugin for the authoritative language and mirror
- * changes into the shell. This replaces the previous fs.watch on dsh's
- * settings.yaml — the plugin is the only interface to dsh internals now.
- * Returns a stop function.
+ * Start polling the plugin for the authoritative language and mirror changes
+ * into the shell. Replaces the pre-refactor `fs.watch` on `~/.dsh/settings.yaml`
+ * — the plugin is the only interface to dsh internals now.
+ *
+ * The interval is `unref()`d so it never keeps the Node event loop alive
+ * during Electron shutdown. Returns a `stop` function for tests / repeated
+ * starts.
  */
 function watchDshLanguage() {
+  if (pollTimer) return () => stopPolling();
   const tick = async () => {
     const lang = await pluginClient.getLanguage();
-    if (lang && SUPPORTED_LANGS.includes(lang) && lang !== currentLang) {
-      setLang(lang);
-    }
+    if (lang && SUPPORTED_LANGS.includes(lang) && lang !== currentLang) setLang(lang);
   };
   // Fire once immediately (dsh may already be up), then on interval.
   tick().catch(() => {});
   pollTimer = setInterval(() => { tick().catch(() => {}); }, POLL_INTERVAL_MS);
-  return () => { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } };
+  if (typeof pollTimer.unref === 'function') pollTimer.unref();
+  return () => stopPolling();
 }
 
-module.exports = { t, getLang, setLang, getSupportedLangs, onLangChange, getDict, watchDshLanguage };
+function stopPolling() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+}
+
+module.exports = {
+  t, getLang, setLang, getSupportedLangs, getLangLabels,
+  onLangChange, getDict, watchDshLanguage,
+};

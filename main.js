@@ -1,13 +1,16 @@
 /**
- * main.js — Electron 主进程入口
+ * main.js — Electron main-process entry.
  *
- * 职责仅限于：
- *   1. 创建启动页（splash）和主窗口
- *   2. 编排 setup 流程（环境检查 → dsh 安装 → 服务启动 → 打开 UI）
- *   3. 应用菜单、桥接服务和生命周期
+ * Responsibilities are deliberately narrow:
+ *   1. Create the splash window and the main window.
+ *   2. Orchestrate the setup pipeline (env check → dsh install → server
+ *      start → open UI).
+ *   3. Wire up the app menu, the companion HTTP service, and lifecycle
+ *      teardown.
  *
- * 所有业务逻辑拆到 src/ 下：paths / logger / dsh / install / setup / menu /
- * capabilities / companion / i18n
+ * Everything else lives under `src/`:
+ *   paths / logger / fsx / pluginClient / dsh / install / setup /
+ *   capabilities / companion / menu / i18n
  */
 
 'use strict';
@@ -26,9 +29,8 @@ let splashWin = null;
 let mainWin   = null;
 let companion = null;
 
-// ── 窗口创建 ──────────────────────────────────────────────────────────────────
+// ── Windows ──────────────────────────────────────────────────────────────────
 
-/** 创建启动页窗口（无标题栏，居中，白底） */
 function createSplash() {
   splashWin = new BrowserWindow({
     width: 480, height: 520,
@@ -43,7 +45,8 @@ function createSplash() {
   });
   splashWin.loadFile('splash.html');
 
-  // DOM ready 后推送 i18n 字典，让 splash 渲染正确语言文案
+  // Push the current i18n dictionary as soon as the DOM is ready so the
+  // splash renders in the right language before any progress arrives.
   splashWin.webContents.once('dom-ready', () => {
     splashWin.webContents.send('i18n-dict', getDict());
   });
@@ -56,25 +59,20 @@ function createSplash() {
   return splashWin;
 }
 
-// 语言切换时：推送新字典给启动页（若还活着）+ 重建菜单
+// Language switch → refresh splash dict (if still alive) + rebuild menu.
 onLangChange(() => {
   try {
-    if (splashWin && !splashWin.isDestroyed() && splashWin.webContents) {
+    if (splashWin && !splashWin.isDestroyed()) {
       splashWin.webContents.send('i18n-dict', getDict());
     }
-  } catch (_) { /* splash 已销毁，忽略 */ }
+  } catch (_) { /* splash gone */ }
   try {
-    if (mainWin && !mainWin.isDestroyed()) {
-      buildMenu(mainWin, splashWin);
-    }
+    if (mainWin && !mainWin.isDestroyed()) buildMenu(mainWin, splashWin);
   } catch (e) { log('menu rebuild on lang change failed:', e && e.message); }
 });
 
-/**
- * 创建主窗口（加载 dsh Web UI）。
- * @param {number} port  dsh 实际监听端口
- */
 function createMain(port) {
+  // setContext synchronizes pluginClient's port; this is the ONE place we do so.
   capabilities.setContext({ dshPort: port });
   const url = dshUrl();
   log('creating main window, url=', url);
@@ -98,36 +96,35 @@ function createMain(port) {
     capabilities.setContext({ mainWin: null });
   });
 
-  // 注入滚动条样式
+  // Thin scrollbar
   mainWin.webContents.on('did-finish-load', () => {
     mainWin.webContents.insertCSS(
       '::-webkit-scrollbar{width:6px;height:6px}' +
       '::-webkit-scrollbar-track{background:transparent}' +
       '::-webkit-scrollbar-thumb{background:rgba(0,0,0,.18);border-radius:4px}'
-    );
+    ).catch(() => { /* window may be destroyed already */ });
   });
 
-  // 菜单（Open Folder / 最近工作区都会走 capabilities 统一能力层）
   buildMenu(mainWin, splashWin);
 
-  // dsh 端口/工作区确定后刷新 companion 发现文件
+  // Publish current port/workspace to the plugin via the companion discovery file.
   companion?.refresh();
   return mainWin;
 }
 
-// ── 应用生命周期 ──────────────────────────────────────────────────────────────
+// ── App lifecycle ────────────────────────────────────────────────────────────
 
 app.whenReady().then(async () => {
   log('=== DeepSeek Harness Desktop starting ===');
-  watchDshLanguage();  // 通过 dsh-api 插件轮询语言变化，保持菜单/splash 同步
+  watchDshLanguage(); // background poll of GET /dsh-api/language (interval is unref'd)
 
-  // Companion 服务：把桌面独占能力暴露给 dsh-api 插件（每次启动随机 token + 端口）
-  companion = await startCompanion({ api: capabilities }).catch(err => {
+  companion = await startCompanion({ api: capabilities }).catch((err) => {
     log('companion start failed:', err.message);
     return null;
   });
 
-  // 状态变化（工作区切换等）→ 刷新 companion 发现文件 + 重建菜单
+  // State changes (workspace switch, port change) → refresh discovery file
+  // and rebuild the menu so the current-workspace tooltip stays accurate.
   capabilities.setOnStateChanged(() => {
     companion?.refresh();
     if (mainWin && !mainWin.isDestroyed()) buildMenu(mainWin, splashWin);
@@ -135,15 +132,16 @@ app.whenReady().then(async () => {
 
   const win = createSplash();
 
-  // 等 splash 的 DOM ready + preload 注册好 onProgress 后再跑 setup，
-  // 避免 progress 事件在 renderer 监听器就绪前发出（黑屏 bug 根因）。
+  // Wait for the splash DOM to be ready AND the preload to register its
+  // onProgress handler before running setup — otherwise progress events
+  // fire before the renderer can listen for them (the original black-splash bug).
   win.webContents.once('dom-ready', () => {
     setTimeout(() => {
-      runSetup(win, createMain).catch(err => log('setup error:', err.message));
+      runSetup(win, createMain).catch((err) => log('setup error:', err.message));
     }, 80);
   });
 
-  // macOS: 点 Dock 图标时，没有窗口就重新启动 splash + setup
+  // macOS: clicking the Dock icon with no window ⇒ relaunch splash + setup.
   app.on('activate', () => {
     if (mainWin || splashWin) return;
     const s = createSplash();
@@ -153,13 +151,12 @@ app.whenReady().then(async () => {
   });
 });
 
-// 关窗口不退出（macOS 惯例）；dsh 是 detached 的，不杀
+// Standard macOS convention: closing all windows doesn't quit. dsh is detached, so we don't kill it either.
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
-// dsh 进程以 detached + unref 启动，app 退出时自然不影响它
 app.on('before-quit', () => {
-  try { companion?.stop(); } catch (_) { /* companion already down */ }
+  try { companion?.stop(); } catch (_) { /* already down */ }
   companion = null;
 });

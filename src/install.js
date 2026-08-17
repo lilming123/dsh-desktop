@@ -1,47 +1,51 @@
 /**
- * install.js — @deepseek-ai/dsh 的安装检测与安装
+ * install.js — Detect and install @deepseek-ai/dsh.
  *
- * 用 ~/.dsh-desktop.installed marker 文件 + npx 缓存路径检查，
- * 避免每次启动都跑 `npx --version`（约 8s）。已安装时检测 < 5ms。
+ * We avoid running `npx --version` on every launch (~8s) by using a marker
+ * file + a fast FS check for the presence of dsh in the npx cache. When both
+ * pass, this whole module returns in <5ms.
  */
 
+'use strict';
+
 const fs = require('fs');
-const os = require('os');
-const path = require('path');
 const { spawn } = require('child_process');
 const { npxBin } = require('./paths');
 const { buildEnv } = require('./dsh');
+const { homePath, writeTextAtomic } = require('./fsx');
 const { log } = require('./logger');
 
-const MARKER_FILE = path.join(os.homedir(), '.dsh-desktop.installed');
+const MARKER_FILE = homePath('.dsh-desktop.installed');
 
 /**
- * 快速检查：marker 文件存在 + npx 缓存里有 @deepseek-ai/dsh 包。
- * 两步都是 FS 检查，几毫秒完成。
+ * Fast liveness: marker + at least one npx cache entry that contains dsh.
+ * Both branches are FS-only, milliseconds at most.
  */
 function isDshReady() {
   if (!fs.existsSync(MARKER_FILE)) return false;
   try {
-    const cacheDir = path.join(os.homedir(), '.npm', '_npx');
+    const cacheDir = homePath('.npm', '_npx');
     if (!fs.existsSync(cacheDir)) return false;
     for (const d of fs.readdirSync(cacheDir)) {
-      if (fs.existsSync(path.join(cacheDir, d, 'node_modules', '@deepseek-ai', 'dsh'))) {
-        return true;
-      }
+      const candidate = `${cacheDir}/${d}/node_modules/@deepseek-ai/dsh`;
+      if (fs.existsSync(candidate)) return true;
     }
   } catch { /* ignore */ }
   return false;
 }
 
-/** 写 marker 文件，标记 dsh 已安装 */
+/** Write the marker (atomic; failures are logged, not fatal). */
 function markInstalled() {
-  try { fs.writeFileSync(MARKER_FILE, new Date().toISOString()); } catch {}
+  if (!writeTextAtomic(MARKER_FILE, new Date().toISOString())) {
+    log('install: marker write failed (non-fatal)');
+  }
 }
 
 /**
- * 确保 dsh 已安装。
- * - 已安装（marker + 缓存都在）→ 立即返回，不 spawn 任何进程
- * - 没装 → `npx --yes @deepseek-ai/dsh --version` 拉取安装，成功后写 marker
+ * Ensure dsh is installed.
+ *   - fast path (marker + cache hit): resolve immediately, no subprocess
+ *   - slow path (missing): `npx --yes @deepseek-ai/dsh --version` to trigger
+ *     the npm install into the local npx cache, then write the marker
  */
 function ensureInstalled() {
   return new Promise((resolve, reject) => {
@@ -49,7 +53,7 @@ function ensureInstalled() {
       log('dsh already installed (marker + cache)');
       return resolve();
     }
-    log('dsh not installed, running npx --yes @deepseek-ai/dsh --version…');
+    log('dsh not installed, running `npx --yes @deepseek-ai/dsh --version`…');
     const proc = spawn(npxBin(), ['--yes', '@deepseek-ai/dsh', '--version'], {
       stdio: ['ignore', 'pipe', 'pipe'],
       env: buildEnv(),

@@ -1,52 +1,58 @@
 /**
- * dsh-api — DeepSeek Harness HTTP control-plane plugin
+ * dsh-api — DeepSeek Harness HTTP control-plane plugin.
  *
- * 把 dsh 自身的内部能力以 HTTP 路由的形式挂到 dsh 的 webServer 上（前缀
- * `/dsh-api`），让**同机的任何应用**（浏览器扩展、CLI 工具、桌面壳、编辑器
- * 集成等）都可以通过一个稳定的入口调用 dsh，而不必去理解 dsh 的进程模型或
- * 各服务的 in-process 接口。
+ * Exposes dsh's own internal capabilities as HTTP routes on the dsh
+ * webServer (default prefix: `/dsh-api`). Any process on the same machine
+ * — a browser extension, a CLI, a desktop wrapper, an editor integration —
+ * can drive dsh through this single entry point instead of reaching into
+ * its in-process services directly.
  *
- * ── 两类能力 ──────────────────────────────────────────────────────────────────
+ * ── Capability layers ────────────────────────────────────────────────────
  *
- *   1. dsh-native（**始终可用**，只要插件加载了）：
- *        - GET  /dsh-api/health              存活探针
- *        - GET  /dsh-api/language            读 locale.preference
- *        - POST /dsh-api/language            写 locale.preference（settings 服务）
- *        - GET  /dsh-api/workspace/list      列出工作区注册表
- *        - GET  /dsh-api/workspace/current   当前 cwd / dsh 端口 / companion 状态
+ *   1. dsh-native (always available once the plugin is loaded):
+ *        GET  /dsh-api/health              liveness probe
+ *        GET  /dsh-api/language            read locale.preference
+ *        POST /dsh-api/language            write locale.preference
+ *        GET  /dsh-api/workspace/list      list workspace registry
+ *        GET  /dsh-api/workspace/current   cwd + optional companion state
  *
- *   2. companion-bridged（**需要同机 companion 进程注册**）：
- *        - GET  /dsh-api/companion/state     companion 状态快照
- *        - POST /dsh-api/workspace/open      打开工作区（会重启 dsh，需 companion）
- *        - POST /dsh-api/input/paste         向 dsh Web UI 注入文本
- *        - POST /dsh-api/window/show|reload  host 窗口控制
- *        - POST /dsh-api/app/quit            退出 host 应用
+ *   2. companion-bridged (needs a same-machine "companion" process to be
+ *      registered — see the companion protocol below):
+ *        GET  /dsh-api/companion/state     companion state snapshot
+ *        POST /dsh-api/workspace/open      open workspace (dsh restart)
+ *        POST /dsh-api/input/paste         inject text into the dsh UI
+ *        POST /dsh-api/window/show|reload  host window control
+ *        POST /dsh-api/app/quit            quit the host app
  *
- *   Companion 通过写发现文件 `$DSH_HOME/dsh-api-companion.json` 注册；
- *   文件格式 `{ port, token, pid, ...state }`。不存在 / 端口不可达时，
- *   companion 类接口一律返回 503（native 类接口不受影响）。
+ *   A companion registers itself by writing `$DSH_HOME/dsh-api-companion.json`
+ *   ({ port, token, pid, ...state }). If the file is missing or its port is
+ *   unreachable, companion-only routes return 503; native routes keep working.
  *
- * ── 安全 ─────────────────────────────────────────────────────────────────────
+ * ── Security ─────────────────────────────────────────────────────────────
  *
- *   - dsh 的 webServer 只绑定 127.0.0.1，本插件复用同一 socket
- *   - 写接口（`POST`）校验 `Origin`：允许无 Origin（curl/CLI）与回环源；
- *     非回环 Origin 一律 403，防止其他站点在浏览器中偷偷调用
- *   - Companion 代理携带发现文件里的随机 token，companion 侧强制校验
+ *   - dsh binds 127.0.0.1 only; this plugin reuses that socket.
+ *   - Mutating requests (`POST`) validate `Origin`: no Origin (curl/CLI) or
+ *     loopback origins are allowed; any other origin is 403. This prevents
+ *     drive-by browser calls from unrelated sites.
+ *   - Companion proxying carries the discovery-file token as
+ *     `x-dsh-api-companion-token`; the companion is expected to reject
+ *     mismatches.
  *
- * ── 安装 ─────────────────────────────────────────────────────────────────────
+ * ── Install ──────────────────────────────────────────────────────────────
  *
- *   1) 拷贝 index.mjs 到某个 dsh profile 目录，例如：
+ *   1) Copy this file into a dsh profile, e.g.
  *        $DSH_HOME/profiles/web/dsh-api/index.mjs
- *   2) 写一份 patch 覆盖层（`--patch`）：
+ *   2) Write a patch layer (`--patch`) that inserts the plugin:
  *        - insert:
  *            - id: dsh-api
  *              name: ./dsh-api/index.mjs
- *   3) 启动 dsh 时透传：
+ *   3) Start dsh with the patch:
  *        dsh web --patch <patch.yml> --port 3080
  *
- *   插件可选 config：
- *     { companionFile: '<path>' }  自定义 companion 发现文件（默认见上）
- *     { basePath: '/dsh-api' }      自定义路由前缀（默认 /dsh-api）
+ *   Optional plugin config (via the patch entry's `config: { ... }`):
+ *     basePath      — HTTP route prefix (default: /dsh-api)
+ *     companionFile — companion discovery file
+ *                     (default: $DSH_HOME/dsh-api-companion.json)
  *
  * @packageDocumentation
  */
@@ -62,12 +68,12 @@ const SUPPORTED_LANGS = ['zh', 'en'];
 const MAX_BODY_BYTES = 1 << 20; // 1 MiB
 const COMPANION_TIMEOUT_MS = 8000;
 
-/** $DSH_HOME（覆盖：环境变量 DSH_HOME，默认 ~/.dsh） */
+/** `$DSH_HOME` (env override, default `~/.dsh`). */
 function dshHome() {
   return process.env.DSH_HOME || join(homedir(), '.dsh');
 }
 
-/** 读取 companion 发现文件；文件缺失、损坏、端口不合法返回 null */
+/** Read the companion discovery file; returns null on missing / bad shape. */
 function readCompanionInfo(file) {
   try {
     if (!existsSync(file)) return null;
@@ -79,7 +85,7 @@ function readCompanionInfo(file) {
   }
 }
 
-/** 收集请求体（上限 1 MiB，超过直接 destroy 连接） */
+/** Read a request body with a hard cap; destroys the socket on overflow. */
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let size = 0;
@@ -97,7 +103,14 @@ function readBody(req) {
   });
 }
 
-/** 写接口 Origin 校验：无 Origin（curl/本地进程）与回环 Origin 放行 */
+/** Parse a JSON body (returns {} on empty / invalid). */
+async function readJsonBody(req) {
+  const raw = await readBody(req);
+  try { return raw ? JSON.parse(raw) : {}; }
+  catch { return {}; }
+}
+
+/** Origin check for mutating requests. Missing Origin (CLI) is allowed. */
 function originAllowed(req) {
   const origin = req.headers.origin;
   if (!origin) return true;
@@ -109,7 +122,11 @@ function originAllowed(req) {
   }
 }
 
-/** 短超时的 HTTP 代理到 companion；网络层错误落成结构化 status */
+/**
+ * Proxy an HTTP call to the companion. Returns `{ status, body }`; transport
+ * errors surface as status 502 / 504 with a null body so the caller can
+ * uniformly translate them to a client-facing 502.
+ */
 function proxyToCompanion(companion, method, path, body) {
   return new Promise((resolve) => {
     const payload = body === undefined ? null : JSON.stringify(body);
@@ -126,11 +143,12 @@ function proxyToCompanion(companion, method, path, body) {
       },
       timeout: COMPANION_TIMEOUT_MS,
     }, (res) => {
-      let buf = '';
-      res.on('data', (c) => { buf += c; });
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
       res.on('end', () => {
+        const raw = Buffer.concat(chunks).toString('utf8');
         let parsed = null;
-        try { parsed = JSON.parse(buf); } catch { /* non-JSON body */ }
+        try { parsed = JSON.parse(raw); } catch { /* non-JSON body */ }
         resolve({ status: res.statusCode || 500, body: parsed });
       });
     });
@@ -141,7 +159,8 @@ function proxyToCompanion(companion, method, path, body) {
   });
 }
 
-/** 统一 JSON 响应 */
+// ── Response helpers ─────────────────────────────────────────────────────────
+
 function sendJson(res, status, data) {
   const body = JSON.stringify(data);
   res.writeHead(status, {
@@ -151,21 +170,140 @@ function sendJson(res, status, data) {
   });
   res.end(body);
 }
+function sendError(res, status, message) { sendJson(res, status, { ok: false, error: message }); }
 
-function sendError(res, status, message) {
-  sendJson(res, status, { ok: false, error: message });
+/**
+ * A "handler" is `(ctxLite, req, res) => Promise<void>` where ctxLite exposes
+ * only what handlers legitimately need. Keeping this contract narrow lets
+ * the dispatch table stay short and testable.
+ */
+function buildRoutes({ getCompanion }) {
+  return {
+    // ── dsh-native GETs ──────────────────────────────────────────────────
+    'GET health':            handleHealth(getCompanion),
+    'GET ':                  handleHealth(getCompanion), // '/dsh-api' with no trailing sub
+    'GET language':          handleLanguageGet,
+    'GET workspace/list':    handleWorkspaceList,
+    'GET workspace/current': handleWorkspaceCurrent(getCompanion),
+
+    // ── companion state (needs companion) ────────────────────────────────
+    'GET companion/state':   handleCompanionState(getCompanion),
+
+    // ── mutating routes (Origin-checked before dispatch) ─────────────────
+    'POST language':         handleLanguagePost,
+    'POST workspace/open':   handleWorkspaceOpen(getCompanion),
+    'POST input/paste':      handleInputPaste(getCompanion),
+    'POST window/show':      handleCompanionBridge(getCompanion, 'POST', '/companion/window/show'),
+    'POST window/reload':    handleCompanionBridge(getCompanion, 'POST', '/companion/window/reload'),
+    'POST app/quit':         handleCompanionBridge(getCompanion, 'POST', '/companion/app/quit'),
+  };
 }
 
-/** 把 work 的异常收敛成 JSON 错误响应，避免 500 页面 */
-function safe(res, work) {
-  Promise.resolve()
-    .then(work)
-    .catch((err) => sendError(res, 500, err instanceof Error ? err.message : String(err)));
-}
+// ── Handler implementations ──────────────────────────────────────────────────
+
+const handleHealth = (getCompanion) => async ({ dshPort }, _req, res) => {
+  const companion = getCompanion();
+  sendJson(res, 200, {
+    ok: true,
+    service: 'dsh-api',
+    dshPort,
+    cwd: process.cwd(),
+    companion: companion ? { port: companion.port, pid: companion.pid || null } : null,
+  });
+};
+
+const handleLanguageGet = async ({ settings }, _req, res) => {
+  let language = null;
+  try {
+    const locale = settings?.get('locale');
+    if (locale && typeof locale === 'object') language = locale.preference || null;
+  } catch { /* namespace not registered yet */ }
+  sendJson(res, 200, { ok: true, language, supported: SUPPORTED_LANGS });
+};
+
+const handleWorkspaceList = async ({ workspaceRegistry }, _req, res) => {
+  if (workspaceRegistry === undefined) {
+    // No registry ⇒ empty list, not an error: the plugin can still be useful
+    // (e.g. language) in profiles that don't include the workspace service.
+    return sendJson(res, 200, { ok: true, workspaces: [] });
+  }
+  const workspaces = workspaceRegistry.list().map((w) => ({
+    id: w.id,
+    path: w.path,
+    title: w.title,
+    createdAt: w.createdAt,
+    sessionCount: (w.sessionIds || []).length,
+  }));
+  sendJson(res, 200, { ok: true, workspaces });
+};
+
+const handleWorkspaceCurrent = (getCompanion) => async ({ dshPort }, _req, res) => {
+  const companion = getCompanion();
+  let companionState = null;
+  if (companion) {
+    const r = await proxyToCompanion(companion, 'GET', '/companion/state');
+    if (r.body && r.body.ok) companionState = r.body.state || null;
+  }
+  sendJson(res, 200, { ok: true, cwd: process.cwd(), dshPort, companion: companionState });
+};
+
+const handleCompanionState = (getCompanion) => async (_ctx, _req, res) => {
+  const companion = getCompanion();
+  if (!companion) return sendError(res, 503, 'companion not available');
+  const r = await proxyToCompanion(companion, 'GET', '/companion/state');
+  if (!r.body || !r.body.ok) return sendError(res, 502, 'companion unreachable');
+  sendJson(res, 200, { ok: true, ...r.body.state });
+};
+
+const handleLanguagePost = async ({ settings }, req, res) => {
+  if (settings === undefined) return sendError(res, 503, 'settings service unavailable');
+  const body = await readJsonBody(req);
+  const language = typeof body.language === 'string' ? body.language : null;
+  if (!language || !SUPPORTED_LANGS.includes(language)) {
+    return sendError(res, 400, `language must be one of: ${SUPPORTED_LANGS.join(', ')}`);
+  }
+  await settings.update('locale', { preference: language });
+  sendJson(res, 200, { ok: true, language });
+};
+
+const handleWorkspaceOpen = (getCompanion) => async (_ctx, req, res) => {
+  const companion = getCompanion();
+  if (!companion) return sendError(res, 503, 'companion not available');
+  const body = await readJsonBody(req);
+  const pathValue = typeof body.path === 'string' && body.path.length > 0 ? body.path : null;
+  const r = await proxyToCompanion(companion, 'POST', '/companion/workspace/open', { path: pathValue });
+  if (!r.body || !r.body.ok) {
+    const msg = (r.body && r.body.error) || 'workspace switch failed';
+    return sendError(res, (r.body && r.body.error) ? 400 : 502, msg);
+  }
+  sendJson(res, 200, { ok: true, ...r.body.result });
+};
+
+const handleInputPaste = (getCompanion) => async (_ctx, req, res) => {
+  const companion = getCompanion();
+  if (!companion) return sendError(res, 503, 'companion not available');
+  const body = await readJsonBody(req);
+  if (typeof body.text !== 'string') return sendError(res, 400, 'text (string) is required');
+  const r = await proxyToCompanion(companion, 'POST', '/companion/input/paste', { text: body.text });
+  if (!r.body || !r.body.ok) return sendError(res, 502, (r.body && r.body.error) || 'paste failed');
+  sendJson(res, 200, { ok: true });
+};
+
+/** Generic pass-through for endpoints whose only job is to forward the call. */
+const handleCompanionBridge = (getCompanion, method, path) => async (_ctx, _req, res) => {
+  const companion = getCompanion();
+  if (!companion) return sendError(res, 503, 'companion not available');
+  const r = await proxyToCompanion(companion, method, path);
+  sendJson(res, r.body && r.body.ok ? 200 : 502, r.body || { ok: false, error: 'companion error' });
+};
+
+// ── Plugin entry point ───────────────────────────────────────────────────────
 
 export default {
   name: 'dsh-api',
-  // webServer 由 dsh-host-webserver 提供；声明硬依赖让 Cordis 等 service 就绪后再激活
+  // webServer is provided by dsh-host-webserver; hard-inject so Cordis waits
+  // for that service before activating this plugin (loader entries are
+  // applied in parallel, so we can't assume the service is up otherwise).
   inject: ['webServer'],
 
   apply(ctx, config) {
@@ -175,184 +313,43 @@ export default {
       : DEFAULT_BASE_PATH;
     const companionFile = config.companionFile || join(dshHome(), DEFAULT_COMPANION_FILE_NAME);
     const webServer = ctx.webServer;
-
-    const readCompanion = () => readCompanionInfo(companionFile);
+    const getCompanion = () => readCompanionInfo(companionFile);
+    const routes = buildRoutes({ getCompanion });
 
     ctx.effect(() => webServer.register({
       kind: 'prefix',
       path: basePath,
-      handler: (req, res) => safe(res, async () => {
-        // 这些 service 由其他条目提供，可选依赖：每次请求现取，缺失时降级
-        const settings = ctx.get('settings');
-        const workspaceRegistry = ctx.get('workspaceRegistry');
-        const url = new URL(req.url || '/', 'http://localhost');
-        const sub = url.pathname.slice(basePath.length).replace(/^\/+/, '');
-        const method = req.method || 'GET';
-        const dshPort = req.socket.localPort || null;
-
-        // ── 只读端点（无副作用，GET） ────────────────────────────────────────
-        if (method === 'GET') {
-          if (sub === 'health' || sub === '') {
-            const companion = readCompanion();
-            sendJson(res, 200, {
-              ok: true,
-              service: 'dsh-api',
-              basePath,
-              dshPort,
-              cwd: process.cwd(),
-              companion: companion ? { port: companion.port, pid: companion.pid || null } : null,
-            });
-            return;
-          }
-
-          if (sub === 'language') {
-            let language = null;
-            try {
-              const locale = settings?.get('locale');
-              if (locale && typeof locale === 'object') language = locale.preference || null;
-            } catch { /* namespace 未注册 */ }
-            sendJson(res, 200, { ok: true, language, supported: SUPPORTED_LANGS });
-            return;
-          }
-
-          if (sub === 'workspace/list') {
-            if (workspaceRegistry === undefined) {
-              sendJson(res, 200, { ok: true, workspaces: [] });
-              return;
-            }
-            const workspaces = workspaceRegistry.list().map((w) => ({
-              id: w.id,
-              path: w.path,
-              title: w.title,
-              createdAt: w.createdAt,
-              sessionCount: (w.sessionIds || []).length,
-            }));
-            sendJson(res, 200, { ok: true, workspaces });
-            return;
-          }
-
-          if (sub === 'workspace/current') {
-            const companion = readCompanion();
-            let companionState = null;
-            if (companion) {
-              const r = await proxyToCompanion(companion, 'GET', '/companion/state');
-              if (r.body && r.body.ok) companionState = r.body.state || null;
-            }
-            sendJson(res, 200, { ok: true, cwd: process.cwd(), dshPort, companion: companionState });
-            return;
-          }
-
-          if (sub === 'companion/state') {
-            const companion = readCompanion();
-            if (!companion) {
-              sendError(res, 503, 'companion not available');
-              return;
-            }
-            const r = await proxyToCompanion(companion, 'GET', '/companion/state');
-            if (!r.body || !r.body.ok) {
-              sendError(res, 502, 'companion unreachable');
-              return;
-            }
-            sendJson(res, 200, { ok: true, ...r.body.state });
-            return;
-          }
-        }
-
-        // ── 写端点（POST） ─────────────────────────────────────────────────
-        if (!originAllowed(req)) {
-          sendError(res, 403, 'origin not allowed');
-          return;
-        }
-
-        // POST /language — dsh 原生能力，无需 companion
-        if (sub === 'language' && method === 'POST') {
-          if (settings === undefined) {
-            sendError(res, 503, 'settings service unavailable');
-            return;
-          }
-          let body = {};
-          try { body = JSON.parse(await readBody(req) || '{}'); } catch { /* empty */ }
-          const language = typeof body.language === 'string' ? body.language : null;
-          if (!language || !SUPPORTED_LANGS.includes(language)) {
-            sendError(res, 400, `language must be one of: ${SUPPORTED_LANGS.join(', ')}`);
-            return;
-          }
-          await settings.update('locale', { preference: language });
-          sendJson(res, 200, { ok: true, language });
-          return;
-        }
-
-        const KNOWN_ENDPOINTS = new Set([
-          'health', '', 'workspace/current', 'workspace/list', 'workspace/open',
-          'language', 'input/paste', 'window/show', 'window/reload',
-          'companion/state', 'app/quit',
-        ]);
-        if (!KNOWN_ENDPOINTS.has(sub)) {
-          sendError(res, 404, `unknown ${basePath} endpoint: /${sub}`);
-          return;
-        }
-        if (method !== 'POST') {
-          sendError(res, 405, 'method not allowed');
-          return;
-        }
-
-        // 剩余写端点走 companion
-        const companion = readCompanion();
-        if (!companion) {
-          sendError(res, 503, 'companion not available (dsh started without a host companion?)');
-          return;
-        }
-
-        if (sub === 'workspace/open') {
-          let body = {};
-          try { body = JSON.parse(await readBody(req) || '{}'); } catch { /* empty */ }
-          const pathValue = typeof body.path === 'string' && body.path.length > 0 ? body.path : null;
-          const r = await proxyToCompanion(companion, 'POST', '/companion/workspace/open', { path: pathValue });
-          if (!r.body || !r.body.ok) {
-            const message = (r.body && r.body.error) || 'workspace switch failed';
-            sendError(res, (r.body && r.body.error) ? 400 : 502, message);
-            return;
-          }
-          sendJson(res, 200, { ok: true, ...r.body.result });
-          return;
-        }
-
-        if (sub === 'input/paste') {
-          let body = {};
-          try { body = JSON.parse(await readBody(req) || '{}'); } catch { /* empty */ }
-          if (typeof body.text !== 'string') {
-            sendError(res, 400, 'text (string) is required');
-            return;
-          }
-          const r = await proxyToCompanion(companion, 'POST', '/companion/input/paste', { text: body.text });
-          if (!r.body || !r.body.ok) {
-            sendError(res, 502, (r.body && r.body.error) || 'paste failed');
-            return;
-          }
-          sendJson(res, 200, { ok: true });
-          return;
-        }
-
-        if (sub === 'window/show') {
-          const r = await proxyToCompanion(companion, 'POST', '/companion/window/show');
-          sendJson(res, r.body && r.body.ok ? 200 : 502, r.body || { ok: false, error: 'companion error' });
-          return;
-        }
-
-        if (sub === 'window/reload') {
-          const r = await proxyToCompanion(companion, 'POST', '/companion/window/reload');
-          sendJson(res, r.body && r.body.ok ? 200 : 502, r.body || { ok: false, error: 'companion error' });
-          return;
-        }
-
-        if (sub === 'app/quit') {
-          const r = await proxyToCompanion(companion, 'POST', '/companion/app/quit');
-          sendJson(res, r.body && r.body.ok ? 200 : 502, r.body || { ok: false, error: 'companion error' });
-          return;
-        }
-
-        sendError(res, 500, 'unhandled endpoint');
-      }),
+      handler: (req, res) => dispatch(ctx, routes, basePath, req, res),
     }));
   },
 };
+
+async function dispatch(ctx, routes, basePath, req, res) {
+  try {
+    // These services are provided by other loader entries; look them up per
+    // request so a slow-starting service doesn't block plugin activation.
+    const ctxLite = {
+      settings: ctx.get('settings'),
+      workspaceRegistry: ctx.get('workspaceRegistry'),
+      dshPort: req.socket.localPort || null,
+    };
+    const url = new URL(req.url || '/', 'http://localhost');
+    const sub = url.pathname.slice(basePath.length).replace(/^\/+/, '');
+    const method = req.method || 'GET';
+    const key = `${method} ${sub}`;
+
+    // Origin check runs before all mutating handlers. Missing entries fall
+    // through to the 404/405 checks below without touching Origin at all.
+    if (method !== 'GET' && !originAllowed(req)) return sendError(res, 403, 'origin not allowed');
+
+    const handler = routes[key];
+    if (handler) return handler(ctxLite, req, res);
+
+    // Distinguish "unknown path" vs. "known path, wrong method" for better UX.
+    const anyMethodOnPath = Object.keys(routes).some((k) => k.endsWith(` ${sub}`));
+    if (anyMethodOnPath) return sendError(res, 405, 'method not allowed');
+    return sendError(res, 404, `unknown ${basePath} endpoint: /${sub}`);
+  } catch (err) {
+    sendError(res, 500, err instanceof Error ? err.message : String(err));
+  }
+}
