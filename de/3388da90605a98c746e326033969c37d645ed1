@@ -1,0 +1,27 @@
+preload-main.js
+  s_d713d37a9b2b46::t_e1c5f52b58fa3e 1-19
+package.json
+  s_d713d37a9b2b46::t_b9eacf2a5bca8e 25
+src/menu.js
+  s_d713d37a9b2b46::t_3ce3aaa33873cc 73,75-97
+main.js
+  s_d713d37a9b2b46::t_d80a5e348fd696 14,20
+  s_d713d37a9b2b46::t_d26aee504319e7 61-87
+  s_d713d37a9b2b46::t_343582ac13e330 102-106,113,120-148
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.40-trip",
+  "base_commit_sha": "de3388da90605a98c746e326033969c37d645ed1",
+  "prompts": {},
+  "sessions": {
+    "s_d713d37a9b2b46": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4c441139-3a17-45f2-815a-9ac8ca559ad2",
+        "model": "arn:aws:bedrock:us-west-2:466494951737:application-inference-profile/rf6www9ej5dq"
+      },
+      "human_author": "wdm <damingwang@trip.com>"
+    }
+  }
+}
