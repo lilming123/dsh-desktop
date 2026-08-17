@@ -1,0 +1,51 @@
+{
+  "name": "dsh-desktop",
+  "version": "1.0.0",
+  "description": "DeepSeek Harness Desktop — native desktop wrapper for the DeepSeek Harness web UI",
+  "author": "lilming123",
+  "license": "MIT",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "pack:mac": "electron-builder --mac --dir",
+    "pack:win": "electron-builder --win --dir",
+    "dist:mac": "electron-builder --mac",
+    "dist:win": "electron-builder --win",
+    "dist": "electron-builder --mac --win"
+  },
+  "build": {
+    "appId": "com.deepseek.harness-desktop",
+    "productName": "DeepSeek Harness",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "splash.html",
+      "icon.png",
+      "src/**/*"
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "icon": "icon.png",
+      "target": [
+        { "target": "dir", "arch": ["arm64", "x64"] }
+      ]
+    },
+    "win": {
+      "icon": "icon.png",
+      "target": [
+        { "target": "nsis", "arch": ["x64"] }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  },
+  "devDependencies": {
+    "electron": "^34.5.8",
+    "electron-builder": "^25.1.8"
+  }
+}
