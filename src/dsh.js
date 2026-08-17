@@ -42,13 +42,25 @@ function buildEnv() {
 }
 
 /**
- * 探测 :3080 是否有 dsh 在响应。
- * 任何 HTTP 响应（哪怕 404）都算就绪。
+ * 探测 :3080 是否有 **dsh** 在响应。
+ * 不只看有没有 HTTP 响应——还要确认响应确实来自 dsh（避免别的程序占了 3080 被误判为已就绪）。
+ * dsh 的响应特征：body 里有 `window.__DSH_BOOT__` 或 header 含 dsh 标识。
  */
 function isServerUp() {
   return new Promise(resolve => {
-    const req = http.get(DSH_URL, () => { req.destroy(); resolve(true); });
-    req.setTimeout(500, () => req.destroy());
+    const req = http.get(DSH_URL, res => {
+      // 检查响应体里有没有 dsh 特征标记
+      let body = '';
+      res.on('data', chunk => { body += chunk; });
+      res.on('end', () => {
+        const isDsh = body.includes('__DSH_BOOT__') || body.includes('@deepseek-ai');
+        req.destroy();
+        resolve(isDsh);
+      });
+      // 兜底：响应头里也可能有线索
+      res.resume();
+    });
+    req.setTimeout(1500, () => { req.destroy(); resolve(false); });
     req.once('error', () => resolve(false));
   });
 }
@@ -70,6 +82,22 @@ function pollReady(startMs = Date.now()) {
 
 /**
  * kill 掉占用 :3080 的所有进程（防止端口残留导致新 dsh EADDRINUSE）。
+ */
+/**
+ * 检查 :3080 是否被任何进程占用（不一定是 dsh）。
+ * @returns {Promise<boolean>}
+ */
+function isPortInUse() {
+  return new Promise(resolve => {
+    const req = http.get(DSH_URL, () => { req.destroy(); resolve(true); });
+    req.setTimeout(500, () => req.destroy());
+    req.once('error', () => resolve(false));
+  });
+}
+
+/**
+ * kill 掉占用 :3080 的所有进程。
+ * ⚠️ 调用方必须先确认占用者是 dsh（或已征得用户同意），否则会误杀别的程序。
  */
 function killPort3080() {
   try {
@@ -122,16 +150,31 @@ function startDsh(onOutput = null) {
 
 /**
  * 确保有一个可用的 dsh 服务。
- * - 已在 :3080 跑 → 直接复用（秒开）
- * - 没跑 → 启动新的，轮询就绪
+ * 三种情况：
+ *   1. dsh 已在 :3080 跑 → 直接复用（秒开）
+ *   2. 别的程序占了 :3080（响应不含 dsh 特征）→ 抛错，让用户知道
+ *   3. 没人占用 → 启动新的 dsh，轮询就绪
  * @returns {Promise<'reused'|'started'>}
+ * @throws {Error} 端口被非 dsh 程序占用时
  */
 async function ensureDsh(onOutput = null) {
-  if (await isServerUp()) {
-    log('dsh already running on :3080 — reusing');
-    return 'reused';
+  const portInUse = await isPortInUse();
+
+  if (portInUse) {
+    // 端口有响应，确认是不是 dsh
+    if (await isServerUp()) {
+      log('dsh already running on :3080 — reusing');
+      return 'reused';
+    }
+    // 端口被别的程序占了——不强杀，报错让用户处理
+    const msg = `Port ${DSH_PORT} is in use by another program (not dsh). ` +
+      `Please free it (e.g. lsof -ti tcp:${DSH_PORT} | xargs kill -9) and restart.`;
+    log('ERROR:', msg);
+    throw new Error(msg);
   }
-  killPort3080();
+
+  // 没人占用，启动新的 dsh
+  killPort3080();  // 兜底清理（极端情况：端口残留但 GET 不通）
   await new Promise(r => setTimeout(r, 200));
   startDsh(onOutput);
   log('polling for :3080 ready…');

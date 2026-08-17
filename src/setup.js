@@ -51,9 +51,16 @@ async function runSetup(splashWin, openMain) {
 
   // Step 3: 启动/复用 dsh 服务
   progress(splashWin, 'start', 'active', { label: 'Starting server…', pct: 50 });
-  const result = await ensureDsh(stdout => {
-    progress(splashWin, 'start', 'active', { msg: stdout.slice(0, 80), pct: 60 });
-  });
+  let result;
+  try {
+    result = await ensureDsh(stdout => {
+      progress(splashWin, 'start', 'active', { msg: stdout.slice(0, 80), pct: 60 });
+    });
+  } catch (e) {
+    // 端口被别的程序占用 / dsh 启动失败
+    progress(splashWin, 'start', 'error', { msg: e.message });
+    throw e;
+  }
   progress(splashWin, 'start', 'done', { label: result === 'reused' ? 'Server already running ✓' : 'Server ready ✓', pct: 90 });
 
   // Step 4: 打开主窗口
