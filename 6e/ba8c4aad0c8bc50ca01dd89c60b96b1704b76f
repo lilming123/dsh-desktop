@@ -1,0 +1,24 @@
+src/dsh.js
+  s_d713d37a9b2b46::t_2ed3d3cce3d191 4-7,9,14,20-21,26-33,37,49-52,54,56,60,70-72,74-80,85-86,88-97,99-101,103-110,114-115,117-120,122-125,130-131,133,138-139,147,149-150,165-167,170-175,178-184,188-191,196-208,211-220
+  s_d713d37a9b2b46::t_23fb31fc342f13 12
+src/setup.js
+  s_d713d37a9b2b46::t_06cc30f776dd50 34,52,63-66,68,70
+main.js
+  s_d713d37a9b2b46::t_7b76dd383d1471 19,23,47,49-53,62,66,75,83-85
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.40-trip",
+  "base_commit_sha": "6eba8c4aad0c8bc50ca01dd89c60b96b1704b76f",
+  "prompts": {},
+  "sessions": {
+    "s_d713d37a9b2b46": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4c441139-3a17-45f2-815a-9ac8ca559ad2",
+        "model": "glm-5.2"
+      },
+      "human_author": "wdm <damingwang@trip.com>"
+    }
+  }
+}
