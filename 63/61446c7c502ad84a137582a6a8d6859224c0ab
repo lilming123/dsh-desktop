@@ -1,0 +1,23 @@
+src/dsh.js
+  s_d713d37a9b2b46::t_c9953a05652b45 86-101
+  s_d713d37a9b2b46::t_83963c78f18efe 153-156,158,161-173,175-177
+  s_d713d37a9b2b46::t_83d3a91eaf2353 45-47,51-63
+src/setup.js
+  s_d713d37a9b2b46::t_9c5d892a170240 54-63
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.40-trip",
+  "base_commit_sha": "6361446c7c502ad84a137582a6a8d6859224c0ab",
+  "prompts": {},
+  "sessions": {
+    "s_d713d37a9b2b46": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4c441139-3a17-45f2-815a-9ac8ca559ad2",
+        "model": "glm-5.2"
+      },
+      "human_author": "wdm <damingwang@trip.com>"
+    }
+  }
+}
