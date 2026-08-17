@@ -11,9 +11,33 @@
  */
 
 const { app, Menu, dialog } = require('electron');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const { t, getLang, setLang, getSupportedLangs } = require('./i18n');
 
 const LANG_LABELS = { 'en': 'English', 'zh': '简体中文' };
+const DSH_SETTINGS = path.join(os.homedir(), '.dsh', 'settings.yaml');
+
+/**
+ * 直接修改 dsh 的 settings.yaml 里的 locale.preference。
+ * 简单文本替换，避免引入完整 YAML 依赖。
+ */
+function writeDshLocalePreference(lang) {
+  try {
+    let text = fs.existsSync(DSH_SETTINGS) ? fs.readFileSync(DSH_SETTINGS, 'utf8') : '';
+    const localeBlock = /^locale:\s*\n\s+preference:\s*['"]?[\w-]+['"]?/m;
+    if (localeBlock.test(text)) {
+      text = text.replace(localeBlock, `locale:\n  preference: ${lang}`);
+    } else {
+      // 追加到文件末尾
+      if (text && !text.endsWith('\n')) text += '\n';
+      text += `locale:\n  preference: ${lang}\n`;
+    }
+    fs.writeFileSync(DSH_SETTINGS, text, 'utf8');
+    return true;
+  } catch { return false; }
+}
 
 /** 把文本注入到当前激活的输入元素 */
 function injectToInput(mainWin, text) {
@@ -69,34 +93,16 @@ function buildMenu(mainWin, splashWin, onOpenWorkspace) {
     label: (lang === currentLang ? '✓ ' : '   ') + LANG_LABELS[lang],
     click: () => {
       try {
+        // 1. 本地 i18n 切换（会自动触发菜单重建 via onLangChange）
         setLang(lang);
-        // 重建菜单以刷新语言标签
-        buildMenu(mainWin, splashWin, onOpenWorkspace);
-        // 通知 dsh WebUI 切换语言（让页面内的下拉菜单也跟着变）
+        // 2. 改 dsh 的 settings.yaml，让 dsh 下次读到新语言
+        writeDshLocalePreference(lang);
+        // 3. reload 主窗口，让 dsh 立即用新语言重渲染
         if (mainWin && !mainWin.isDestroyed() && mainWin.webContents) {
-          mainWin.webContents.executeJavaScript(`
-            (function() {
-              // 通过 dsh 的 cordis root 找到 locale service 并调用 setLocale
-              const target = ${JSON.stringify(lang)};
-              try {
-                const root = (globalThis.__DSH_BOOT__ && globalThis.__cordis_root)
-                  || (window.__cordis_root)
-                  || null;
-                if (root && root.locale && typeof root.locale.setLocale === 'function') {
-                  const snap = root.locale.getLocale && root.locale.getLocale();
-                  const cand = (snap && snap.locales) || [];
-                  const match = cand.find(l => (l.id || '').toLowerCase().startsWith(target));
-                  root.locale.setLocale(match ? match.id : target);
-                  return;
-                }
-                // Fallback：更新 <html lang>，让上游 MutationObserver 感知
-                document.documentElement.setAttribute('lang', target);
-              } catch (e) {}
-            })();
-          `).catch(() => {});
+          mainWin.webContents.reload();
         }
       } catch (e) {
-        console.error('[menu] lang switch UI refresh failed:', e && e.message);
+        console.error('[menu] lang switch failed:', e && e.message);
       }
     },
   }));

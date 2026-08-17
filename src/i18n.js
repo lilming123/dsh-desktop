@@ -4,11 +4,15 @@
  * 支持：英语 (en)、简体中文 (zh)
  * 语言文件在 src/locales/<lang>.json
  *
+ * 语言来源优先级：
+ *   1. dsh 自己的 ~/.dsh/settings.yaml 里的 locale.preference（若可读，优先跟随 dsh）
+ *   2. ~/.dsh-desktop.lang（app 内菜单选择的备用持久化）
+ *   3. 系统 LANG 环境变量
+ *   4. 英语
+ *
  * 用法：
  *   const { t, setLang, getLang, onLangChange } = require('./src/i18n');
  *   t('steps.start.ready', { port: 3081 })  // "Server ready on :3081 ✓"
- *
- * 语言选择持久化到 ~/.dsh-desktop.lang
  */
 
 const fs = require('fs');
@@ -17,6 +21,7 @@ const path = require('path');
 
 const SUPPORTED_LANGS = ['en', 'zh'];
 const LANG_FILE = path.join(os.homedir(), '.dsh-desktop.lang');
+const DSH_SETTINGS = path.join(os.homedir(), '.dsh', 'settings.yaml');
 const DEFAULT_LANG = detectDefaultLang();
 
 let currentLang = loadLang();
@@ -30,8 +35,25 @@ function detectDefaultLang() {
   return 'en';
 }
 
-/** 从配置文件读语言，回退到系统默认 */
+/** 从 dsh 的 settings.yaml 读 locale.preference（不解析完整 YAML，简单正则即可） */
+function readDshLocale() {
+  try {
+    if (!fs.existsSync(DSH_SETTINGS)) return null;
+    const text = fs.readFileSync(DSH_SETTINGS, 'utf8');
+    // 匹配 "locale:\n  preference: <值>"
+    const m = text.match(/^locale:\s*\n\s+preference:\s*['"]?([\w-]+)['"]?/m);
+    if (!m) return null;
+    const raw = m[1].toLowerCase();
+    if (raw.startsWith('zh')) return 'zh';
+    if (raw.startsWith('en')) return 'en';
+    return null;
+  } catch { return null; }
+}
+
+/** 从配置文件读语言，优先 dsh 设置 → app 备份 → 系统默认 */
 function loadLang() {
+  const fromDsh = readDshLocale();
+  if (fromDsh) return fromDsh;
   try {
     const saved = fs.readFileSync(LANG_FILE, 'utf8').trim();
     if (SUPPORTED_LANGS.includes(saved)) return saved;
@@ -99,4 +121,28 @@ function onLangChange(fn) { listeners.add(fn); }
 /** 当前语言的字典对象（供主进程推送给 splash） */
 function getDict() { return dict; }
 
-module.exports = { t, getLang, setLang, getSupportedLangs, onLangChange, getDict };
+/**
+ * 监听 dsh settings.yaml 变化，检测到 locale.preference 改变时自动 setLang。
+ * 主进程创建主窗口后调用一次即可。返回 stop 函数。
+ */
+function watchDshLocale() {
+  let watcher = null;
+  const start = () => {
+    try {
+      if (!fs.existsSync(DSH_SETTINGS)) {
+        // dsh 还没写过 settings.yaml，稍后再试
+        setTimeout(start, 2000);
+        return;
+      }
+      watcher = fs.watch(DSH_SETTINGS, { persistent: false }, () => {
+        // 文件变化时可能触发多次，读到值不变时 setLang 会 no-op
+        const l = readDshLocale();
+        if (l && l !== currentLang) setLang(l);
+      });
+    } catch { /* 静默失败 */ }
+  };
+  start();
+  return () => { try { watcher?.close(); } catch {} };
+}
+
+module.exports = { t, getLang, setLang, getSupportedLangs, onLangChange, getDict, watchDshLocale };
