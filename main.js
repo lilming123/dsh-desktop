@@ -4,7 +4,8 @@
  * Responsibilities are deliberately narrow:
  *   1. Create the splash window and the main window.
  *   2. Orchestrate the setup pipeline (env check → dsh install → server
- *      start → open UI).
+ *      start → open UI), including the "Try Again" retry path from the
+ *      splash screen.
  *   3. Wire up the app menu, the companion HTTP service, and lifecycle
  *      teardown.
  *
@@ -15,7 +16,7 @@
 
 'use strict';
 
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path');
 const { log } = require('./src/logger');
 const { buildMenu } = require('./src/menu');
@@ -28,6 +29,28 @@ const { startCompanion } = require('./src/companion');
 let splashWin = null;
 let mainWin   = null;
 let companion = null;
+
+// Guards against running setup twice concurrently (e.g. retry clicked twice,
+// or retry while the first attempt is still going).
+let setupRunning = false;
+
+/**
+ * Run the setup pipeline against a splash window, guarded against
+ * concurrency. Failures are logged (the splash already shows the error UI)
+ * and never thrown to the caller.
+ */
+async function runSetupSafely(win) {
+  if (setupRunning) return;
+  if (!win || win.isDestroyed()) return;
+  setupRunning = true;
+  try {
+    await runSetup(win, createMain);
+  } catch (err) {
+    log('setup error:', err && err.message);
+  } finally {
+    setupRunning = false;
+  }
+}
 
 // ── Windows ──────────────────────────────────────────────────────────────────
 
@@ -130,15 +153,20 @@ app.whenReady().then(async () => {
     if (mainWin && !mainWin.isDestroyed()) buildMenu(mainWin, splashWin);
   });
 
+  // Splash "Try Again" button → re-run the whole setup pipeline. The button
+  // only appears after a failure, and the guard above prevents overlaps.
+  ipcMain.on('retry', () => {
+    log('retry requested from splash');
+    runSetupSafely(splashWin);
+  });
+
   const win = createSplash();
 
   // Wait for the splash DOM to be ready AND the preload to register its
   // onProgress handler before running setup — otherwise progress events
   // fire before the renderer can listen for them (the original black-splash bug).
   win.webContents.once('dom-ready', () => {
-    setTimeout(() => {
-      runSetup(win, createMain).catch((err) => log('setup error:', err.message));
-    }, 80);
+    setTimeout(() => runSetupSafely(win), 80);
   });
 
   // macOS: clicking the Dock icon with no window ⇒ relaunch splash + setup.
@@ -146,7 +174,7 @@ app.whenReady().then(async () => {
     if (mainWin || splashWin) return;
     const s = createSplash();
     s.webContents.once('dom-ready', () => {
-      setTimeout(() => runSetup(s, createMain).catch(() => {}), 80);
+      setTimeout(() => runSetupSafely(s), 80);
     });
   });
 });

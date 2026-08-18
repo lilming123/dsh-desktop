@@ -127,7 +127,7 @@ netstat -ano | findstr :3080 | findstr LISTENING
 不需要额外配置——dsh 自己管自己的设置，本 app 只负责启动 dsh 并加载它的 UI。
 
 - **语言记忆** — `~/.dsh-desktop.lang`（最后一次的选择，用于 dsh 未起来时的默认值）
-- **启动日志** — `~/.dsh-desktop.log`（带时间戳，每次启动覆盖）
+- **启动日志** — `~/.dsh-desktop-logs/` 每次启动一份带时间戳的日志（保留 7 天 / 最多 50 份）；`~/.dsh-desktop.log` 是指向最新一份的软链
 
 ```bash
 tail -f ~/.dsh-desktop.log
@@ -148,7 +148,7 @@ dsh-desktop/
 │   └── README.md
 └── src/
     ├── paths.js          # 跨平台 node/npx/dsh/profile 路径解析
-    ├── logger.js         # ~/.dsh-desktop.log 日志器
+    ├── logger.js         # ~/.dsh-desktop-logs/ 带日期的日志器（保留 7 天）
     ├── i18n.js           # 本地 i18n；轮询插件拿权威语言
     ├── pluginClient.js   # /dsh-api/* HTTP 客户端（访问 dsh 的唯一接口）
     ├── dsh.js            # dsh 生命周期（端口扫描 / 启动 / patch 安装 / 切工作区）

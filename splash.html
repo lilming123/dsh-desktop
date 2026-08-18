@@ -255,7 +255,26 @@
     if (window.electronAPI) {
       window.electronAPI.onProgress(applyProgress);
     }
-    retryBtn.onclick = () => window.electronAPI?.retry();
+    // 失败后点击重试：先清空所有失败/完成态，再通知主进程重跑 setup
+    function resetSplash() {
+      ['node', 'install', 'start', 'ready'].forEach(id => {
+        const el = els[id];
+        if (!el) return;
+        el.classList.remove('active', 'done', 'error');
+        el.querySelectorAll('.step-spinner').forEach(s => s.remove());
+        const icon = el.querySelector('.step-icon');
+        if (icon) { icon.style.visibility = ''; icon.textContent = '○'; }
+      });
+      retryBtn.style.display = 'none';
+      tagline.textContent = t('app.tagline');
+      status.textContent = '';
+      pbar.style.width = '0%';
+    }
+
+    retryBtn.onclick = () => {
+      resetSplash();
+      window.electronAPI?.retry();
+    };
   </script>
 </body>
 </html>

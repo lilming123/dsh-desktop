@@ -127,7 +127,7 @@ netstat -ano | findstr :3080 | findstr LISTENING
 No extra config — dsh manages its own settings. This app only launches dsh and loads its UI.
 
 - **Language memory** — `~/.dsh-desktop.lang` (last-known good; used before dsh answers on startup)
-- **Startup logs** — `~/.dsh-desktop.log` (timestamped, one file per launch)
+- **Startup logs** — `~/.dsh-desktop-logs/` keeps one timestamped file per launch (7-day retention, max 50 files); `~/.dsh-desktop.log` is a symlink to the latest session
 
 ```bash
 tail -f ~/.dsh-desktop.log
@@ -148,7 +148,7 @@ dsh-desktop/
 │   └── README.md
 └── src/
     ├── paths.js          # Cross-platform node/npx/dsh/profile path resolution
-    ├── logger.js         # ~/.dsh-desktop.log logger
+    ├── logger.js         # ~/.dsh-desktop-logs/ dated logger (7-day retention)
     ├── i18n.js           # Local i18n; polls the plugin for authoritative language
     ├── pluginClient.js   # HTTP client for /dsh-api/* (the only seam into dsh)
     ├── dsh.js            # dsh lifecycle (port scan / spawn / patch install / workspace switch)
