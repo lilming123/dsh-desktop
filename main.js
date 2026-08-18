@@ -55,17 +55,23 @@ async function runSetupSafely(win) {
 // ── Windows ──────────────────────────────────────────────────────────────────
 
 function createSplash() {
+  // macOS: keep the frameless look but restore the native traffic lights
+  // (titleBarStyle does that; setWindowButtonVisibility is belt-and-braces).
+  // Other platforms stay fully frameless with no window controls.
+  const isMac = process.platform === 'darwin';
   splashWin = new BrowserWindow({
     width: 480, height: 520,
     frame: false,
     resizable: false,
     backgroundColor: '#ffffff',
+    ...(isMac ? { titleBarStyle: 'hiddenInset' } : {}),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
     },
   });
+  if (isMac) splashWin.setWindowButtonVisibility(true);
   splashWin.loadFile('splash.html');
 
   // Push the current i18n dictionary as soon as the DOM is ready so the
