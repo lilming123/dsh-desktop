@@ -130,6 +130,7 @@ function createMain(port) {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
+      preload: path.join(__dirname, 'preload.js'),
     },
   });
   capabilities.setContext({ mainWin });
