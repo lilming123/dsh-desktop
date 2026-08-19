@@ -1,19 +1,13 @@
-# dsh-api plugin loader patch
+# dsh-api plugin loader patch (legacy manual-mount layout, used only by
+# dsh-desktop's fallback installer when the profile has no npm-installed
+# copy of dsh-api).
 #
-# Copy this file (or generate an equivalent) alongside your dsh profile and
-# feed it to dsh via `--patch`, so the runtime knows to load the plugin.
-# `name` is resolved relative to the profile directory (baseUrl), so the
-# path below assumes you have copied `index.mjs` to `<profile>/dsh-api/`.
+# `name` is resolved relative to the profile directory (baseUrl), so this
+# assumes `index.mjs` has been copied to `<profile>/dsh-api/`.
 #
-# Example (default web profile at $DSH_HOME/profiles/web):
-#
-#   mkdir -p $DSH_HOME/profiles/web/dsh-api
-#   cp index.mjs $DSH_HOME/profiles/web/dsh-api/index.mjs
-#   cp patch.yml $DSH_HOME/profiles/web/dsh-api.patch.yml
-#   dsh web --patch $DSH_HOME/profiles/web/dsh-api.patch.yml --port 3080
-#
-# The top-level `insert` (without `id`) appends a new entry to the root
-# loader list.
+# The preferred distribution path is 'dsh plugin --profile <name> add
+# github:lilming123/dsh-api' — see cordis.patch.yml + package.json for
+# the standard bundle layout the loader picks up automatically.
 - insert:
     - id: dsh-api
       name: ./dsh-api/index.mjs

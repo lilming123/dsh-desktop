@@ -15,6 +15,12 @@
  *        POST /dsh-api/language            write locale.preference
  *        GET  /dsh-api/workspace/list      list workspace registry
  *        GET  /dsh-api/workspace/current   cwd + optional companion state
+ *        POST /dsh-api/workspace/create    create a workspace registry entry
+ *        GET  /dsh-api/events              Server-Sent Events stream:
+ *                                          agent-idle (running → idle),
+ *                                          approval-needed (read-only bypass
+ *                                          of the approval/request waterfall),
+ *                                          heartbeat every 25s.
  *
  *   2. companion-bridged (needs a same-machine "companion" process to be
  *      registered — see the companion protocol below):
@@ -67,6 +73,8 @@ const DEFAULT_COMPANION_FILE_NAME = 'dsh-api-companion.json';
 const SUPPORTED_LANGS = ['zh', 'en'];
 const MAX_BODY_BYTES = 1 << 20; // 1 MiB
 const COMPANION_TIMEOUT_MS = 8000;
+const SSE_HEARTBEAT_MS = 25000;
+const APPROVAL_SUMMARY_MAX = 160;
 
 /** `$DSH_HOME` (env override, default `~/.dsh`). */
 function dshHome() {
@@ -177,7 +185,7 @@ function sendError(res, status, message) { sendJson(res, status, { ok: false, er
  * only what handlers legitimately need. Keeping this contract narrow lets
  * the dispatch table stay short and testable.
  */
-function buildRoutes({ getCompanion }) {
+function buildRoutes({ getCompanion, sseHub }) {
   return {
     // ── dsh-native GETs ──────────────────────────────────────────────────
     'GET health':            handleHealth(getCompanion),
@@ -185,12 +193,14 @@ function buildRoutes({ getCompanion }) {
     'GET language':          handleLanguageGet,
     'GET workspace/list':    handleWorkspaceList,
     'GET workspace/current': handleWorkspaceCurrent(getCompanion),
+    'GET events':            handleEventStream(sseHub),
 
     // ── companion state (needs companion) ────────────────────────────────
     'GET companion/state':   handleCompanionState(getCompanion),
 
     // ── mutating routes (Origin-checked before dispatch) ─────────────────
     'POST language':         handleLanguagePost,
+    'POST workspace/create': handleWorkspaceCreate,
     'POST workspace/open':   handleWorkspaceOpen(getCompanion),
     'POST input/paste':      handleInputPaste(getCompanion),
     'POST window/show':      handleCompanionBridge(getCompanion, 'POST', '/companion/window/show'),
@@ -289,6 +299,81 @@ const handleInputPaste = (getCompanion) => async (_ctx, req, res) => {
   sendJson(res, 200, { ok: true });
 };
 
+/**
+ * Create a workspace-registry entry. Body: `{ path: string, title?: string }`.
+ *
+ * We only register the workspace here; switching dsh's cwd to it still goes
+ * through `POST /workspace/open` (which is companion-bridged, since only the
+ * desktop wrapper can restart dsh). Callers that want the full "new-and-open"
+ * flow do two calls in sequence.
+ */
+const handleWorkspaceCreate = async ({ workspaceRegistry }, req, res) => {
+  if (workspaceRegistry === undefined) return sendError(res, 503, 'workspaceRegistry unavailable');
+  const body = await readJsonBody(req);
+  const path = typeof body.path === 'string' && body.path.length > 0 ? body.path : null;
+  if (!path) return sendError(res, 400, 'path (non-empty string) is required');
+  const title = typeof body.title === 'string' && body.title.length > 0 ? body.title : undefined;
+  try {
+    const w = await workspaceRegistry.create(path, title);
+    sendJson(res, 200, {
+      ok: true,
+      workspace: {
+        id: w.id, path: w.path, title: w.title, createdAt: w.createdAt,
+      },
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    sendError(res, 400, msg);
+  }
+};
+
+/**
+ * SSE (Server-Sent Events) fan-out endpoint. One HTTP GET per subscriber; the
+ * subscriber keeps the socket open. We emit `agent-idle` / `approval-needed`
+ * events pushed by the subscription installed in `apply()`, and a `heartbeat`
+ * every 25s so proxies / load balancers don't idle-kill the stream.
+ *
+ * The subscriber's lifecycle:
+ *   - registers itself into `sseHub.subscribers` on connect
+ *   - closes its own timer + unregisters on `req.close` / `req.error`
+ *
+ * The subscriber list is process-scoped; when dsh shuts down, sockets close
+ * naturally and the hub's `.close()` (called by the `ctx.effect` disposer)
+ * writes a farewell `server-stopping` event first.
+ */
+const handleEventStream = (sseHub) => async (_ctx, req, res) => {
+  res.writeHead(200, {
+    'content-type': 'text/event-stream; charset=utf-8',
+    'cache-control': 'no-store',
+    'connection': 'keep-alive',
+    // Encourage CDNs / proxies not to buffer.
+    'x-accel-buffering': 'no',
+  });
+  // Advise clients to retry every 3s if the connection drops without warning.
+  res.write('retry: 3000\n\n');
+  // A `ready` frame so the client can log a successful connect immediately.
+  res.write(`event: ready\ndata: ${JSON.stringify({ timestamp: Date.now() })}\n\n`);
+
+  const client = { res, hb: null };
+  client.hb = setInterval(() => {
+    try { res.write(`event: heartbeat\ndata: {"timestamp":${Date.now()}}\n\n`); }
+    catch { /* torn */ }
+  }, SSE_HEARTBEAT_MS);
+  // Node timers block process exit by default; SSE keep-alives shouldn't.
+  if (typeof client.hb.unref === 'function') client.hb.unref();
+
+  sseHub.subscribers.add(client);
+
+  const cleanup = () => {
+    if (!sseHub.subscribers.has(client)) return;
+    sseHub.subscribers.delete(client);
+    try { clearInterval(client.hb); } catch { /* ignore */ }
+    try { res.end(); } catch { /* already closed */ }
+  };
+  req.on('close', cleanup);
+  req.on('error', cleanup);
+};
+
 /** Generic pass-through for endpoints whose only job is to forward the call. */
 const handleCompanionBridge = (getCompanion, method, path) => async (_ctx, _req, res) => {
   const companion = getCompanion();
@@ -314,15 +399,153 @@ export default {
     const companionFile = config.companionFile || join(dshHome(), DEFAULT_COMPANION_FILE_NAME);
     const webServer = ctx.webServer;
     const getCompanion = () => readCompanionInfo(companionFile);
-    const routes = buildRoutes({ getCompanion });
 
-    ctx.effect(() => webServer.register({
-      kind: 'prefix',
-      path: basePath,
-      handler: (req, res) => dispatch(ctx, routes, basePath, req, res),
-    }));
+    // ── SSE broadcast hub ────────────────────────────────────────────────
+    //
+    // Everything that pushes an event through the plugin goes through this
+    // one struct: the HTTP handler adds subscribers, the ctx.on listeners
+    // publish via broadcast(). Keeping the hub inline (instead of a module-
+    // scoped singleton) means a second plugin instance — should there ever
+    // be one — gets its own independent fan-out and doesn't leak listeners
+    // across ctx boundaries.
+    const sseHub = {
+      subscribers: new Set(),
+      broadcast(eventName, payload) {
+        const line = `event: ${eventName}\ndata: ${JSON.stringify(payload)}\n\n`;
+        // Iterate a snapshot: a write may synchronously .end() a torn socket,
+        // and mutating a Set during iteration is a foot-gun.
+        for (const c of Array.from(this.subscribers)) {
+          try { c.res.write(line); }
+          catch {
+            // Drop the failed subscriber; its `req.close` handler will also
+            // run and be a no-op (Set.delete on a missing key is fine).
+            try { clearInterval(c.hb); } catch { /* ignore */ }
+            this.subscribers.delete(c);
+          }
+        }
+      },
+      close() {
+        for (const c of Array.from(this.subscribers)) {
+          try { c.res.write(`event: server-stopping\ndata: {"timestamp":${Date.now()}}\n\n`); }
+          catch { /* ignore */ }
+          try { clearInterval(c.hb); } catch { /* ignore */ }
+          try { c.res.end(); } catch { /* ignore */ }
+        }
+        this.subscribers.clear();
+      },
+    };
+
+    const routes = buildRoutes({ getCompanion, sseHub });
+
+    // ── Subscribe to internal events and broadcast on the SSE hub ────────
+
+    // 1) agent/status: emit `agent-idle` when an agent finished a turn
+    //    (running → idle). We keep a WeakMap keyed by agent identity so the
+    //    entry gets GC'd alongside the agent — no manual cleanup needed.
+    const lastStatus = new WeakMap();
+    ctx.on('agent/status', ({ agent, status }) => {
+      const prev = lastStatus.get(agent);
+      lastStatus.set(agent, status);
+      if (prev === 'running' && status === 'idle') {
+        sseHub.broadcast('agent-idle', {
+          sessionId: extractSessionId(agent),
+          title: extractSessionTitle(agent),
+          previousStatus: prev,
+          timestamp: Date.now(),
+        });
+      }
+    });
+
+    // 2) approval/request: a WATERFALL, and we participate as a strict
+    //    read-only bypass — never inspect a decision, never alter one, never
+    //    consume the request. `return next()` hands control straight back to
+    //    the real answerer chain, so other listeners on this waterfall see
+    //    exactly what they'd see if we weren't installed.
+    ctx.on('approval/request', (req, next) => {
+      try {
+        sseHub.broadcast('approval-needed', {
+          sessionId: req?.session?.id ?? req?.sessionId ?? null,
+          kind: typeof req?.kind === 'string' ? req.kind : null,
+          summary: summarizeApprovalRequest(req),
+          timestamp: Date.now(),
+        });
+      } catch {
+        // A malformed request must not break the approval chain.
+      }
+      return next();
+    });
+
+    // ── HTTP route registration ──────────────────────────────────────────
+
+    ctx.effect(() => {
+      const unregister = webServer.register({
+        kind: 'prefix',
+        path: basePath,
+        handler: (req, res) => dispatch(ctx, routes, basePath, req, res),
+      });
+      return () => {
+        // Close SSE first so subscribers get the farewell event before the
+        // HTTP route disappears out from under them.
+        sseHub.close();
+        unregister();
+      };
+    });
   },
 };
+
+/**
+ * Best-effort extraction of a session id from an agent. Reads only the
+ * commonly-published shapes; falls back to `null` so a schema change in dsh
+ * never breaks the notification pipeline.
+ */
+function extractSessionId(agent) {
+  try {
+    return agent?.session?.id ?? agent?.sessionId ?? agent?.id ?? null;
+  } catch { return null; }
+}
+
+function extractSessionTitle(agent) {
+  try {
+    return (
+      agent?.session?.title ??
+      agent?.session?.header?.title ??
+      agent?.title ??
+      ''
+    );
+  } catch { return ''; }
+}
+
+/**
+ * Reduce an ApprovalRequest to a short user-facing string. Dsh's approval
+ * requests are polymorphic (bash command, fs write, generic ask, …), so we
+ * take the first non-empty field we recognise and truncate. Never throws.
+ */
+function summarizeApprovalRequest(req) {
+  if (!req || typeof req !== 'object') return '';
+  const candidates = [
+    req.summary,
+    req.title,
+    req.description,
+    req.command,
+    req.tool,
+    req.toolName,
+    req.message,
+  ];
+  let picked = '';
+  for (const c of candidates) {
+    if (typeof c === 'string' && c.length > 0) { picked = c; break; }
+  }
+  if (!picked && req.detail && typeof req.detail === 'object') {
+    // Some approval kinds nest a `detail` object; use its first string leaf.
+    for (const v of Object.values(req.detail)) {
+      if (typeof v === 'string' && v.length > 0) { picked = v; break; }
+    }
+  }
+  if (picked.length > APPROVAL_SUMMARY_MAX) {
+    picked = picked.slice(0, APPROVAL_SUMMARY_MAX - 1) + '…';
+  }
+  return picked;
+}
 
 async function dispatch(ctx, routes, basePath, req, res) {
   try {

@@ -1,0 +1,9 @@
+# dsh bundle patch: inserts the dsh-api plugin into a profile's layer stack.
+#
+# Consumed by dsh's loader whenever `dsh-api` is listed in the profile's
+# `dsh.profile.bundles` (or explicitly via `--patch`). `name` is a bare
+# package specifier; dsh resolves it through the profile's node_modules
+# via Node's own require.resolve.
+- insert:
+    - id: dsh-api
+      name: 'dsh-api'

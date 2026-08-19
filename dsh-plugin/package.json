@@ -1,0 +1,44 @@
+{
+  "name": "dsh-api",
+  "version": "0.1.0",
+  "description": "HTTP control-plane plugin for DeepSeek Harness — exposes dsh internals (language, workspace registry, agent-status/approval events) over /dsh-api on the local loopback socket dsh already listens on.",
+  "type": "module",
+  "main": "index.mjs",
+  "exports": {
+    ".": "./index.mjs",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.mjs",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "deepseek",
+    "harness",
+    "dsh",
+    "dsh-plugin",
+    "http",
+    "sse",
+    "control-plane"
+  ],
+  "author": "lilming123",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lilming123/dsh-api.git"
+  },
+  "homepage": "https://github.com/lilming123/dsh-api#readme",
+  "bugs": {
+    "url": "https://github.com/lilming123/dsh-api/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
