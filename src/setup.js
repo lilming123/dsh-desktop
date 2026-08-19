@@ -1,35 +1,61 @@
 /**
- * setup.js — 启动校验流程编排
+ * setup.js — bootstrap pipeline orchestration.
  *
- * 四步顺序执行，每步都向启动页报告进度。所有文案走 i18n，支持中英文切换。
+ * Three visible steps drive the splash from launch to a live dsh window:
  *
- * Step 1 (Runtime) 已从"仅 `node --version`"扩展为完整的运行时装配：
- *   - 探测本机 Node ≥ 20 LTS：命中即复用，不改动任何系统环境。
- *   - 未命中则下载 pinned Node LTS 到 `~/.dsh/runtime/node/<ver>/`，
- *     进度实时映射到启动页进度条。
- *   - 若本机存在 pnpm 则记下路径供子进程 env.PATH 使用，不主动安装。
+ *   1. runtime — provision Node.js and verify @deepseek-ai/dsh is
+ *      installed. Was two separate splash lines ("Checking Node.js" +
+ *      "Checking @deepseek-ai/dsh"); collapsed into one because they
+ *      always run back-to-back and, together, mean "the harness itself
+ *      is ready".
  *
- * Step 3 之后（主窗口已由 main.js 打开）由 main.js 自行调度 upstream 静默升级
- * 检查——本文件不做该工作，避免阻塞用户可见的启动进度。
+ *   2. start — start (or reuse) the dsh service on a free port. dsh's
+ *      default profile bundle includes `dshmarket`, so as soon as the
+ *      service is up its /dsh-market/* routes are mounted too. This
+ *      step used to come after the plugin step; it now comes BEFORE it
+ *      so the next step can talk to dshmarket over HTTP.
+ *
+ *   3. plugin — install `dsh-api` through dshmarket's install route.
+ *      Falls back to the bundled shell copy (via `--patch`) if the
+ *      curated registry rejects the source or dshmarket is unreachable.
+ *      The bundled path is exactly what earlier versions of the shell
+ *      did and remains a safe last resort.
+ *
+ * The old "Opening UI" step was removed: it never did any real work
+ * and only added visual noise between step 3 done and the main window
+ * actually appearing.
+ *
+ * The pipeline is best-effort: any step that can succeed with a
+ * fallback (dsh-api install, in particular) does so silently and the
+ * splash reports the fallback outcome as a normal `done`. Only truly
+ * fatal failures (Node provisioning broken, dsh cannot start) surface
+ * as `error` states with a Retry button.
  */
 
 'use strict';
 
 const { ensureInstalled } = require('./install');
 const {
-  ensureDsh, installApiPlugin, installApiPluginFromGitHub,
-  detectInstalledApiPlugin, setRuntime,
+  ensureDsh, installApiPlugin, detectInstalledApiPlugin, setRuntime,
 } = require('./dsh');
 const { ensureRuntime } = require('./runtime');
+const dshmarket = require('./dshMarketClient');
 const { log } = require('./logger');
 const { t } = require('./i18n');
 
+// The canonical dsh-api source url as it appears in dshmarket's curated
+// registry. When PR #1924 lands in awesome-dsh-plugin/plugins.json this
+// exact url will be there. Until then the install route returns 400
+// ("plugin is not in the curated registry") and we take the bundled
+// fallback path — user-visible behaviour is identical either way.
+const DSH_API_REGISTRY_URL = 'https://github.com/lilming123/dsh-api';
+
 /**
- * 向启动页发送进度事件。
+ * Send a step-progress event to the splash renderer.
  * @param {BrowserWindow} win
- * @param {string} step    'node' | 'install' | 'start' | 'ready'
- * @param {string} state   'active' | 'done' | 'error'
- * @param {object} opts    { label, msg, pct }
+ * @param {'runtime' | 'start' | 'plugin'} step
+ * @param {'active' | 'done' | 'error'} state
+ * @param {{ label?: string, msg?: string, pct?: number }} [opts]
  */
 function progress(win, step, state, opts = {}) {
   log(`progress: ${step}=${state}`, opts);
@@ -37,43 +63,46 @@ function progress(win, step, state, opts = {}) {
 }
 
 /**
- * 把 runtime.ensureRuntime 的 phase 事件翻译成一条启动页 progress。
- * Step 1 占据进度条 0–20%；下载阶段线性映射到 4–18%。
+ * Translate an ensureRuntime phase event into a splash progress row.
+ * runtime + install share the 0–45% slice of the bar; the Node phases
+ * end at ~30 and the "checking dsh" phase caps at 45 so `start` picks
+ * up around 55.
  */
 function mapRuntimeProgress(splashWin, evt) {
-  const { phase, pct, version, mode } = evt || {};
+  const { phase, pct, version } = evt || {};
   switch (phase) {
     case 'detecting-system':
-      progress(splashWin, 'node', 'active', { label: t('steps.node.checking'), pct: 4 });
+      progress(splashWin, 'runtime', 'active', { label: t('steps.runtime.checking'), pct: 4 });
       return;
     case 'system-found':
-      progress(splashWin, 'node', 'done', {
-        msg: t('steps.node.systemFound', { version }), pct: 20,
+      progress(splashWin, 'runtime', 'active', {
+        msg: t('steps.runtime.systemNodeFound', { version }), pct: 25,
       });
       return;
     case 'bundled-ready':
-      progress(splashWin, 'node', 'done', {
-        msg: t('steps.node.bundledReady', { version }), pct: 20,
+      progress(splashWin, 'runtime', 'active', {
+        msg: t('steps.runtime.bundledNodeReady', { version }), pct: 25,
       });
       return;
     case 'bundled-preparing':
-      progress(splashWin, 'node', 'active', {
-        label: t('steps.node.bundling', { version }), pct: 6,
+      progress(splashWin, 'runtime', 'active', {
+        label: t('steps.runtime.bundling', { version }), pct: 6,
       });
       return;
     case 'downloading':
-      // Map registry download 0–100% → splash 6–17%.
-      progress(splashWin, 'node', 'active', {
-        label: t('steps.node.downloading', { pct: pct || 0 }),
-        pct: 6 + Math.floor((pct || 0) * 0.11),
+      // Registry download 0–100% → splash 6–22%.
+      progress(splashWin, 'runtime', 'active', {
+        label: t('steps.runtime.downloading', { pct: pct || 0 }),
+        pct: 6 + Math.floor((pct || 0) * 0.16),
       });
       return;
     case 'extracting':
-      progress(splashWin, 'node', 'active', { label: t('steps.node.extracting'), pct: 18 });
+      progress(splashWin, 'runtime', 'active', { label: t('steps.runtime.extracting'), pct: 24 });
       return;
     case 'done':
-      // Final "done" event; the corresponding "done" progress is emitted by
-      // the caller once ensureRuntime resolves and we know the resolved mode.
+      // Emitted by ensureRuntime just before it returns. The caller
+      // renders the final "done" for step 1 once install verification
+      // (Step 1's second half) is also complete.
       return;
     default:
       log('runtime: unhandled progress phase', phase);
@@ -81,13 +110,13 @@ function mapRuntimeProgress(splashWin, evt) {
 }
 
 /**
- * 运行完整启动校验。
- * @param {BrowserWindow} splashWin  启动页窗口
- * @param {function} openMain        打开主窗口的回调，接收 dsh 端口参数
+ * Run the full setup pipeline.
+ * @param {BrowserWindow} splashWin
+ * @param {(port: number) => void} openMain
  */
 async function runSetup(splashWin, openMain) {
-  // Step 1: Runtime — 探测系统 Node 或装配内置 Node LTS
-  progress(splashWin, 'node', 'active', { label: t('steps.node.checking'), pct: 4 });
+  // ── Step 1: runtime — Node + dsh ────────────────────────────────────
+  progress(splashWin, 'runtime', 'active', { label: t('steps.runtime.checking'), pct: 4 });
 
   let rt;
   try {
@@ -95,37 +124,33 @@ async function runSetup(splashWin, openMain) {
       onProgress: (evt) => mapRuntimeProgress(splashWin, evt),
     });
   } catch (e) {
-    progress(splashWin, 'node', 'error', { msg: t('steps.node.provisionFailed') + ' — ' + (e && e.message) });
+    progress(splashWin, 'runtime', 'error', {
+      msg: t('steps.runtime.provisionFailed') + ' — ' + (e && e.message),
+    });
     throw e;
   }
-
-  // 把 resolvedRuntime 交给 dsh.js，供 install.js / dsh.js 一致使用。
   setRuntime(rt);
 
-  const readyMsg = rt.mode === 'system'
-    ? t('steps.node.systemFound', { version: rt.version })
-    : t('steps.node.bundledReady', { version: rt.version });
-  progress(splashWin, 'node', 'done', { msg: readyMsg, pct: 20 });
-
-  // Step 2: dsh 安装检查 — 已装秒过，未装才走 npx
-  progress(splashWin, 'install', 'active', { label: t('steps.install.checking'), pct: 25 });
+  // Node ready → verify dsh install (fast when already installed).
+  progress(splashWin, 'runtime', 'active', {
+    label: t('steps.runtime.verifyingDsh'), pct: 35,
+  });
   await ensureInstalled();
-  progress(splashWin, 'install', 'done', { label: t('steps.install.ready'), pct: 40 });
 
-  // Step 3: dsh-api 插件 — 优先"标准安装"（github via `dsh plugin add`），
-  // 装不上再回退到 bundled 副本 + --patch。三种可能路径：
-  //   A. 已装 → 立即 done
-  //   B. 未装但网络 OK → 从 GitHub 自动装
-  //   C. 未装且网络失败 / 装出错 → 静默降级 bundled + --patch，pipeline 继续
-  await ensureApiPlugin(splashWin);
+  const nodeMsg = rt.mode === 'system'
+    ? t('steps.runtime.systemNodeFound', { version: rt.version })
+    : t('steps.runtime.bundledNodeReady', { version: rt.version });
+  progress(splashWin, 'runtime', 'done', {
+    label: t('steps.runtime.ready', { node: nodeMsg }), pct: 45,
+  });
 
-  // Step 4: 启动/复用 dsh 服务（动态端口）
-  progress(splashWin, 'start', 'active', { label: t('steps.start.starting'), pct: 60 });
+  // ── Step 2: start — spawn or reuse dsh ──────────────────────────────
+  progress(splashWin, 'start', 'active', { label: t('steps.start.starting'), pct: 55 });
 
   let result;
   try {
-    result = await ensureDsh(stdout => {
-      progress(splashWin, 'start', 'active', { msg: stdout.slice(0, 80), pct: 70 });
+    result = await ensureDsh((stdout) => {
+      progress(splashWin, 'start', 'active', { msg: stdout.slice(0, 80), pct: 65 });
     });
   } catch (e) {
     const msg = e.message.includes('No free port')
@@ -138,80 +163,85 @@ async function runSetup(splashWin, openMain) {
     label: result.mode === 'reused'
       ? t('steps.start.reused', { port: result.port })
       : t('steps.start.ready', { port: result.port }),
-    pct: 90,
+    pct: 75,
   });
 
-  // Step 5: 打开主窗口
-  progress(splashWin, 'ready', 'done', { label: t('steps.ready.opening'), pct: 100 });
+  // ── Step 3: plugin — install dsh-api via dshmarket ──────────────────
+  await ensureApiPlugin(splashWin, result.port);
+
+  // No terminal "Opening UI" step — main.js opens the window immediately.
   openMain(result.port);
 }
 
 /**
- * Ensure `dsh-api` is loadable by the next dsh spawn — either as an
- * npm-installed profile bundle (preferred), or as the desktop-shipped
- * fallback copy. Renders the outcome as a single splash step.
+ * Ensure the dsh-api plugin is loadable by dsh.
  *
- * We never fail the pipeline here: if the network install fails, we
- * silently fall back to the bundled copy so the app still boots.
- * Only if BOTH paths fail (bundled source unreadable, network down) do
- * we surface it as a step error — and even then the caller may decide
- * to continue without the plugin.
+ * Three paths, tried in order:
+ *
+ *   A. Already installed (fresh npm resolve in ~/.dsh/profiles/web).
+ *      Detected pre-emptively; the shell only enforces the "no stale
+ *      bundled copy shadowing a real install" invariant.
+ *
+ *   B. dshmarket install route accepts the source url. This is the
+ *      normal happy path once dsh-api lives in the curated registry.
+ *      dshmarket runs `dsh plugin --profile web add …` internally, so
+ *      we get exactly the same result as the CLI path — just gated
+ *      through the market's curation.
+ *
+ *   C. dshmarket rejects the url (not in registry today) OR dshmarket
+ *      is unreachable OR the install returns an error. Fall back to
+ *      the desktop-bundled copy: dsh loads it via a `--patch` layer
+ *      and the /dsh-api endpoints work identically for the user.
+ *
+ * We never fail the pipeline here — dsh boots without dsh-api and the
+ * shell degrades gracefully (no menu integration, no notifications).
  */
-async function ensureApiPlugin(splashWin) {
+async function ensureApiPlugin(splashWin, port) {
   // A. Already installed → nothing to do.
   if (detectInstalledApiPlugin()) {
     progress(splashWin, 'plugin', 'done', {
-      label: t('steps.plugin.installed'), pct: 55,
+      label: t('steps.plugin.installed'), pct: 100,
     });
-    // Purge any stale bundled fallback in one place, but from setup.js we
-    // don't have direct access — the next installApiPlugin() call inside
-    // ensureDsh() will do it (its detect branch already calls the cleaner).
-    // Instead call installApiPlugin() ONCE here to enforce the invariant:
+    // Enforce "npm install shadows any bundled fallback" via installApiPlugin:
+    // it clears the bundled copy when it detects a real install.
     installApiPlugin();
     return;
   }
 
-  // B. Try the standard install path (network required). This is what the
-  //    user would do manually with `dsh plugin --profile web add …`; doing
-  //    it automatically at first launch removes the manual step entirely.
+  // B. Ask dshmarket to install it. dshmarket's registry gates the source,
+  //    so this only succeeds once dsh-api is listed there. When it's not
+  //    (today, before PR #1924 lands) we get a 400 and drop to (C).
   progress(splashWin, 'plugin', 'active', {
-    label: t('steps.plugin.installingFromGithub'), pct: 45,
+    label: t('steps.plugin.installingViaMarket'), pct: 82,
   });
-  const r = await installApiPluginFromGitHub({
-    onStdout: (chunk) => {
-      const line = chunk.split('\n').map(s => s.trim()).filter(Boolean).slice(-1)[0];
-      if (line) progress(splashWin, 'plugin', 'active', { msg: line.slice(0, 80), pct: 50 });
-    },
-  });
+  const r = await dshmarket.installPlugin(port, DSH_API_REGISTRY_URL);
   if (r.ok) {
+    // Post-install, dshmarket runs pnpm inside the profile; detection
+    // should now see it. Belt-and-braces: don't just trust r.ok.
+    if (detectInstalledApiPlugin()) {
+      progress(splashWin, 'plugin', 'done', {
+        label: t('steps.plugin.installedViaMarket'), pct: 100,
+      });
+      installApiPlugin(); // clears bundled shadow
+      return;
+    }
+    log('dsh-api plugin: dshmarket reported ok but detection failed');
+    // Fall through to bundled fallback rather than error out.
+  }
+
+  // C. Bundled fallback. This is what the older setup did on the failure
+  //    path; it's a first-class supported mode (loaded via --patch).
+  log('dsh-api plugin: dshmarket install unavailable, using bundled fallback:', r.error || 'n/a');
+  const bundled = installApiPlugin();
+  if (bundled === 'installed' || bundled === 'skipped-installed') {
     progress(splashWin, 'plugin', 'done', {
-      label: t('steps.plugin.installedFromGithub'), pct: 55,
+      label: t('steps.plugin.usingBundled'), pct: 100,
     });
     return;
   }
 
-  // C. Network / registry / git failure → fall back to the bundled copy.
-  //    The `installApiPlugin()` call in setup Step 4 would do this anyway
-  //    when it sees no detected npm install, but we do it here so the
-  //    splash shows the correct "offline / bundled" label.
-  log('dsh-api plugin: github install failed, falling back to bundled:', r.error);
-  const bundled = installApiPlugin();
-  if (bundled === 'installed') {
-    progress(splashWin, 'plugin', 'done', {
-      label: t('steps.plugin.usingBundled'), pct: 55,
-    });
-    return;
-  }
-  if (bundled === 'skipped-installed') {
-    // Extremely rare: detectInstalledApiPlugin was false above but true now.
-    // Belt-and-braces: treat as installed.
-    progress(splashWin, 'plugin', 'done', {
-      label: t('steps.plugin.installed'), pct: 55,
-    });
-    return;
-  }
-  // Neither path worked — surface the error but don't abort. dsh will still
-  // start; the /dsh-api endpoints simply won't be there.
+  // Neither path worked. We surface the error but let the app boot —
+  // dsh still starts, dsh-api endpoints simply won't be available.
   progress(splashWin, 'plugin', 'error', {
     msg: t('steps.plugin.bothFailed', { error: r.error || 'unknown' }),
   });

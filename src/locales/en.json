@@ -4,27 +4,23 @@
     "tagline": "Starting up…"
   },
   "steps": {
-    "node": {
-      "checking": "Provisioning runtime",
+    "runtime": {
+      "checking": "Preparing runtime",
       "notFound": "Node.js not found. Install from nodejs.org then restart.",
-      "systemFound": "System Node {{version}} ✓",
+      "systemNodeFound": "System Node {{version}}",
       "bundling": "Preparing bundled Node {{version}}…",
       "downloading": "Downloading Node runtime… {{pct}}%",
       "extracting": "Extracting Node runtime…",
-      "bundledReady": "Bundled Node {{version}} ✓",
+      "bundledNodeReady": "Bundled Node {{version}}",
+      "verifyingDsh": "Verifying @deepseek-ai/dsh",
+      "ready": "{{node}} · @deepseek-ai/dsh ✓",
       "provisionFailed": "Runtime provisioning failed"
-    },
-    "install": {
-      "checking": "Checking @deepseek-ai/dsh",
-      "installing": "Installing @deepseek-ai/dsh…",
-      "installed": "@deepseek-ai/dsh  ✓ installed",
-      "ready": "@deepseek-ai/dsh  ✓"
     },
     "plugin": {
       "checking": "Checking dsh-api plugin",
       "installed": "dsh-api  ✓",
-      "installingFromGithub": "Installing dsh-api from GitHub…",
-      "installedFromGithub": "dsh-api  ✓ installed",
+      "installingViaMarket": "Installing dsh-api via dshmarket…",
+      "installedViaMarket": "dsh-api  ✓ installed via dshmarket",
       "usingBundled": "dsh-api  ✓ (offline copy)",
       "bothFailed": "dsh-api install failed: {{error}}"
     },
@@ -34,9 +30,6 @@
       "ready": "Server ready on :{{port}} ✓",
       "portInUse": "Port {{port}} is in use by another program. Free it and restart.",
       "noFreePort": "No free port available in range 3080-3180."
-    },
-    "ready": {
-      "opening": "Opening UI"
     }
   },
   "upstream": {

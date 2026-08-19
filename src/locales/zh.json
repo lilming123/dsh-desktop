@@ -4,27 +4,23 @@
     "tagline": "正在启动…"
   },
   "steps": {
-    "node": {
-      "checking": "正在装配运行时",
+    "runtime": {
+      "checking": "准备运行时",
       "notFound": "未找到 Node.js，请从 nodejs.org 安装后重启。",
-      "systemFound": "已复用系统 Node {{version}} ✓",
+      "systemNodeFound": "已复用系统 Node {{version}}",
       "bundling": "正在准备内置 Node {{version}}…",
       "downloading": "下载 Node 运行时… {{pct}}%",
       "extracting": "解压 Node 运行时…",
-      "bundledReady": "内置 Node {{version}} ✓",
+      "bundledNodeReady": "内置 Node {{version}}",
+      "verifyingDsh": "校验 @deepseek-ai/dsh",
+      "ready": "{{node}} · @deepseek-ai/dsh ✓",
       "provisionFailed": "运行时装配失败"
-    },
-    "install": {
-      "checking": "检查 @deepseek-ai/dsh",
-      "installing": "正在安装 @deepseek-ai/dsh…",
-      "installed": "@deepseek-ai/dsh  ✓ 已安装",
-      "ready": "@deepseek-ai/dsh  ✓"
     },
     "plugin": {
       "checking": "检查 dsh-api 插件",
       "installed": "dsh-api  ✓",
-      "installingFromGithub": "正在从 GitHub 安装 dsh-api…",
-      "installedFromGithub": "dsh-api  ✓ 已从 GitHub 安装",
+      "installingViaMarket": "通过 dshmarket 安装 dsh-api…",
+      "installedViaMarket": "dsh-api  ✓ 已通过 dshmarket 安装",
       "usingBundled": "dsh-api  ✓（使用内置副本）",
       "bothFailed": "dsh-api 安装失败：{{error}}"
     },
@@ -34,9 +30,6 @@
       "ready": "服务就绪 :{{port}} ✓",
       "portInUse": "端口 {{port}} 被其他程序占用，请释放后重启。",
       "noFreePort": "3080-3180 范围内无可用端口。"
-    },
-    "ready": {
-      "opening": "正在打开界面"
     }
   },
   "upstream": {

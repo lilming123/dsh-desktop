@@ -143,25 +143,17 @@
   <div class="tagline" id="tagline" data-i18n="app.tagline">Starting up…</div>
 
   <div class="steps">
-    <div class="step" id="step-node">
+    <div class="step" id="step-runtime">
       <span class="step-icon">○</span>
-      <span data-i18n="steps.node.checking">Checking Node.js</span>
-    </div>
-    <div class="step" id="step-install">
-      <span class="step-icon">○</span>
-      <span data-i18n="steps.install.checking" id="lbl-install">Checking @deepseek-ai/dsh</span>
-    </div>
-    <div class="step" id="step-plugin">
-      <span class="step-icon">○</span>
-      <span data-i18n="steps.plugin.checking">Checking dsh-api plugin</span>
+      <span data-i18n="steps.runtime.checking">Preparing runtime</span>
     </div>
     <div class="step" id="step-start">
       <span class="step-icon">○</span>
       <span data-i18n="steps.start.starting">Starting server…</span>
     </div>
-    <div class="step" id="step-ready">
+    <div class="step" id="step-plugin">
       <span class="step-icon">○</span>
-      <span data-i18n="steps.ready.opening">Opening UI</span>
+      <span data-i18n="steps.plugin.checking">Checking dsh-api plugin</span>
     </div>
   </div>
 
@@ -195,17 +187,14 @@
     }
 
     const els = {
-      node:    document.getElementById('step-node'),
-      install: document.getElementById('step-install'),
-      plugin:  document.getElementById('step-plugin'),
+      runtime: document.getElementById('step-runtime'),
       start:   document.getElementById('step-start'),
-      ready:   document.getElementById('step-ready'),
+      plugin:  document.getElementById('step-plugin'),
     };
     const pbar    = document.getElementById('pbar');
     const status  = document.getElementById('status');
     const tagline = document.getElementById('tagline');
     const retryBtn = document.getElementById('btnRetry');
-    const lblInstall = document.getElementById('lbl-install');
 
     function activate(id) {
       const el = els[id];
@@ -262,7 +251,7 @@
     }
     // 失败后点击重试：先清空所有失败/完成态，再通知主进程重跑 setup
     function resetSplash() {
-      ['node', 'install', 'plugin', 'start', 'ready'].forEach(id => {
+      ['runtime', 'start', 'plugin'].forEach(id => {
         const el = els[id];
         if (!el) return;
         el.classList.remove('active', 'done', 'error');
