@@ -90,10 +90,21 @@
     "restartHint": "The updated plugin will be active the next time the desktop app is restarted.",
     "installFailedMessage": "Could not install dsh-api: {{error}}\n\nThe bundled fallback copy is still in use."
   },
-  "banner": {
-    "reconnecting": "Reconnecting to dsh…",
-    "lost": "dsh connection lost. Restart to recover.",
+  "modal": {
+    "reconnecting": {
+      "title": "Connection lost",
+      "message": "The desktop app can't reach dsh. Auto-reconnect is in progress — you can also try restarting the service manually."
+    },
+    "lost": {
+      "title": "dsh is not responding",
+      "message": "Auto-reconnect gave up. Restart the dsh service to recover, or quit the app."
+    },
+    "retrying": {
+      "title": "Restarting dsh…",
+      "message": "Killing the current dsh service and spawning a fresh one. This usually takes a couple of seconds."
+    },
     "retry": "Retry",
-    "restart": "Restart dsh"
+    "retryingButton": "Restarting…",
+    "quit": "Quit"
   }
 }

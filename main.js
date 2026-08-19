@@ -29,7 +29,7 @@ const { scheduleSilentUpgrade } = require('./src/upstream');
 const { openEventStream } = require('./src/apiClient');
 const notifier = require('./src/notifier');
 const { createMonitor } = require('./src/connectionMonitor');
-const banner = require('./src/mainWindowBanner');
+const disconnectModal = require('./src/disconnectModal');
 const externalLinks = require('./src/externalLinks');
 
 let splashWin = null;
@@ -38,7 +38,7 @@ let companion = null;
 let eventStream = null;   // dispose fn for the SSE subscription
 let notifierApi = null;   // { handleEvent, dispose }
 let monitor = null;       // connection state machine
-let bannerApi = null;     // { refreshLocale, dispose }
+let modalApi = null;     // { refreshLocale, dispose } — disconnect modal
 let externalLinksApi = null; // { dispose }
 let currentPort = null;   // port the current pipeline is subscribed to
 let restarting = false;   // guards concurrent Restart-button clicks
@@ -113,7 +113,7 @@ onLangChange(() => {
   } catch (e) { log('menu rebuild on lang change failed:', e && e.message); }
   // The banner is a shell overlay — refresh its message when the user
   // toggles the language while it's visible.
-  try { bannerApi?.refreshLocale(); } catch (e) { log('banner refresh failed:', e && e.message); }
+  try { modalApi?.refreshLocale(); } catch (e) { log('banner refresh failed:', e && e.message); }
 });
 
 function createMain(port) {
@@ -212,18 +212,21 @@ function startEventPipeline(port) {
   });
 
   if (mainWin && !mainWin.isDestroyed()) {
-    bannerApi = banner.install({
+    modalApi = disconnectModal.install({
       mainWindow: mainWin,
       monitor,
       translate: (key, params) => t(key, params),
-      onRetryClick: () => {
-        // apiClient handles auto-retry itself; the button here is really a
-        // "user is watching, please hurry up". We reset the monitor so the
-        // banner disappears immediately if the next probe wins the race —
-        // apiClient will retry within its normal back-off window anyway.
-        log('user requested retry — nudging apiClient (monitor stays until onOpen)');
+      // Modal's Retry button: kick a full dsh restart (kill + respawn),
+      // then let apiClient's SSE re-open fire monitor.onOpen — the modal
+      // hides itself when state returns to 'healthy'. Return the restart
+      // result so the modal can surface an error if it failed.
+      onRetryClick: async () => {
+        return await handleManualRestart();
       },
-      onRestartClick: () => { void handleManualRestart(); },
+      onQuitClick: () => {
+        log('modal: user chose Quit — app.quit');
+        app.quit();
+      },
     });
   }
 
@@ -246,11 +249,11 @@ function startEventPipeline(port) {
 function stopEventPipeline() {
   try { eventStream?.(); } catch { /* ignore */ }
   try { notifierApi?.dispose(); } catch { /* ignore */ }
-  try { bannerApi?.dispose(); } catch { /* ignore */ }
+  try { modalApi?.dispose(); } catch { /* ignore */ }
   try { monitor?.dispose(); } catch { /* ignore */ }
   eventStream = null;
   notifierApi = null;
-  bannerApi = null;
+  modalApi = null;
   monitor = null;
   currentPort = null;
 }
@@ -272,7 +275,10 @@ function stopEventPipeline() {
  *      will fire and the banner will disappear.
  */
 async function handleManualRestart() {
-  if (restarting) { log('restart already in progress; ignoring click'); return; }
+  if (restarting) {
+    log('restart already in progress; ignoring click');
+    return { ok: false, error: 'restart already in progress' };
+  }
   restarting = true;
   const oldPort = currentPort;
   log('manual dsh restart requested; oldPort=' + oldPort);
@@ -281,8 +287,9 @@ async function handleManualRestart() {
     const r = await restartDsh((chunk) => log('dsh(restart): ' + String(chunk).slice(0, 120)));
     if (!r.ok) {
       log('manual restart failed:', r.error);
-      // Leave the banner in 'lost' state so the button stays available.
-      return;
+      // Leave monitor in 'lost' state so the modal stays open and Retry
+      // is available again.
+      return { ok: false, error: r.error || 'restart failed' };
     }
     log('manual restart succeeded on :' + r.port);
     if (r.port !== oldPort && mainWin && !mainWin.isDestroyed()) {
@@ -290,12 +297,16 @@ async function handleManualRestart() {
       // the "don't reload on reconnect" contract.
       mainWin.loadURL(dshUrl()).catch((e) => log('reload on new port failed:', e && e.message));
     }
-    // Rewire against the (possibly new) port. This re-installs the banner
-    // too; monitor starts fresh in 'healthy', banner hides immediately.
+    // Rewire against the (possibly new) port. This re-installs the modal
+    // too; monitor starts fresh in 'healthy', modal hides immediately.
     startEventPipeline(r.port);
     // Rebuild the menu — capabilities' current-workspace tooltip may have
     // gone stale during the restart window.
     if (mainWin && !mainWin.isDestroyed()) buildMenu(mainWin, splashWin);
+    return { ok: true };
+  } catch (e) {
+    log('handleManualRestart threw:', e && e.message);
+    return { ok: false, error: (e && e.message) || 'unknown error' };
   } finally {
     restarting = false;
   }

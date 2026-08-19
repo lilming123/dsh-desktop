@@ -90,10 +90,21 @@
     "restartHint": "更新后的插件将在下次重启桌面 App 时生效。",
     "installFailedMessage": "无法安装 dsh-api：{{error}}\n\n仍在使用内置副本。"
   },
-  "banner": {
-    "reconnecting": "正在重连 dsh…",
-    "lost": "dsh 连接已断开，请重启以恢复。",
-    "retry": "重试",
-    "restart": "重启 dsh"
+  "modal": {
+    "reconnecting": {
+      "title": "连接已断开",
+      "message": "桌面应用无法连接到 dsh 服务。系统正在自动重连，你也可以手动重启服务。"
+    },
+    "lost": {
+      "title": "dsh 服务无响应",
+      "message": "自动重连已放弃。请重启 dsh 服务以恢复连接，或退出应用。"
+    },
+    "retrying": {
+      "title": "正在重启 dsh…",
+      "message": "正在停止当前 dsh 服务并重新启动，通常只需几秒钟。"
+    },
+    "retry": "重新连接",
+    "retryingButton": "重启中…",
+    "quit": "退出应用"
   }
 }

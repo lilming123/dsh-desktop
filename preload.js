@@ -14,10 +14,9 @@
  *   onI18n(cb)        ← 'i18n-dict'     — full dictionary push (on dom-ready + switch)
  *   retry()           → 'retry'         — user hit "Try Again" on the splash
  *
- * Also exposes `window.__dshShellBridge` for the connection-status banner
- * we inject into dsh's page (see `src/mainWindowBanner.js`). That bridge
- * forwards banner state pushes to a global the injected script attaches
- * itself to, and exposes tiny `restart()` / `retry()` senders.
+ * Also exposes `window.__dshShellModal` for the disconnect-recovery modal
+ * window (see `src/disconnectModal.js`). That window subscribes to state
+ * pushes and forwards Retry / Quit clicks back to the shell.
  */
 
 'use strict';
@@ -51,38 +50,35 @@ contextBridge.exposeInMainWorld('electronAPI', {
   retry:        () => ipcRenderer.send('retry'),
 });
 
-// Banner bridge: the injected page script (see mainWindowBanner.js) reads
-// `window.__dshShellBanner.apply` and calls this bridge for actions. We
-// route state pushes here and forward them; page-side buffering handles the
-// (very brief) race between dom-ready and the main-process state push that
-// follows it.
+// Modal bridge: the modal renderer (see disconnectModal.js) subscribes
+// to state pushes and sends Retry / Quit actions back. Both directions
+// are only useful for the modal window itself, but preload.js is shared
+// so we expose the bridge unconditionally — the modal renderer checks
+// for `window.__dshShellModal` and no-ops in the main window (which is
+// the dsh page, and never touches this object).
 {
-  const BANNER_STATE = 'dsh-shell:banner-state';
-  const BANNER_RESTART = 'dsh-shell:banner-restart';
-  const BANNER_RETRY = 'dsh-shell:banner-retry';
+  const CH_STATE = 'dsh-shell:modal-state';
+  const CH_RETRY = 'dsh-shell:modal-retry';
+  const CH_QUIT = 'dsh-shell:modal-quit';
+  const CH_READY = 'dsh-shell:modal-ready';
 
+  let subscriber = null;
   let queued = [];
-  ipcRenderer.on(BANNER_STATE, (_e, payload) => {
-    const applier = typeof window.__dshShellBanner?.apply === 'function'
-      ? window.__dshShellBanner.apply
-      : null;
-    if (applier) {
-      try { applier(payload); } catch { /* ignore */ }
-    } else {
-      // Injected script hasn't registered its applier yet — queue for it.
-      queued.push(payload);
-    }
+  ipcRenderer.on(CH_STATE, (_e, payload) => {
+    if (subscriber) { try { subscriber(payload); } catch { /* ignore */ } }
+    else queued.push(payload);
   });
 
-  contextBridge.exposeInMainWorld('__dshShellBridge', {
-    /** Drains any state frames received before the injected applier was ready. */
-    flushQueued() {
-      const applier = window.__dshShellBanner?.apply;
-      if (typeof applier !== 'function') return;
+  contextBridge.exposeInMainWorld('__dshShellModal', {
+    /** Subscribe once to state updates; drains any queued pushes. */
+    onState(fn) {
+      if (subscriber || typeof fn !== 'function') return;
+      subscriber = fn;
       const pending = queued; queued = [];
-      for (const p of pending) { try { applier(p); } catch { /* ignore */ } }
+      for (const p of pending) { try { fn(p); } catch { /* ignore */ } }
     },
-    restart: () => ipcRenderer.send(BANNER_RESTART),
-    retry:   () => ipcRenderer.send(BANNER_RETRY),
+    retry: () => ipcRenderer.send(CH_RETRY),
+    quit:  () => ipcRenderer.send(CH_QUIT),
+    ready: () => ipcRenderer.send(CH_READY),
   });
 }

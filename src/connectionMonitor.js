@@ -30,6 +30,8 @@
 
 'use strict';
 
+const { log } = require('./logger');
+
 const RECONNECT_THRESHOLD = 2;   // consecutive errors before we alarm
 const LOST_AFTER_MS = 15_000;    // sustained-outage threshold
 
@@ -59,12 +61,14 @@ function createMonitor() {
   const setState = (next, error = null) => {
     if (state.state === next && state.error === error) return;
     state = { state: next, since: Date.now(), error };
+    log('monitor: state -> ' + next + (error ? ' err=' + error : '') + ' subs=' + subscribers.size);
     publish();
   };
 
   return {
     /** Notify: SSE handshake open (or a data frame arrived). */
     onOpen() {
+      log('monitor: onOpen');
       consecutiveErrors = 0;
       firstErrorAt = 0;
       clearLostTimer();
@@ -78,6 +82,7 @@ function createMonitor() {
     onError(err) {
       consecutiveErrors += 1;
       const message = err instanceof Error ? err.message : (err ? String(err) : 'disconnected');
+      log('monitor: onError #' + consecutiveErrors + ' state=' + state.state + ' msg=' + message);
 
       if (consecutiveErrors < RECONNECT_THRESHOLD) {
         // Single hiccups are common (dsh reload, LAN blip) — stay quiet.
