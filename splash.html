@@ -151,6 +151,10 @@
       <span class="step-icon">○</span>
       <span data-i18n="steps.install.checking" id="lbl-install">Checking @deepseek-ai/dsh</span>
     </div>
+    <div class="step" id="step-plugin">
+      <span class="step-icon">○</span>
+      <span data-i18n="steps.plugin.checking">Checking dsh-api plugin</span>
+    </div>
     <div class="step" id="step-start">
       <span class="step-icon">○</span>
       <span data-i18n="steps.start.starting">Starting server…</span>
@@ -193,6 +197,7 @@
     const els = {
       node:    document.getElementById('step-node'),
       install: document.getElementById('step-install'),
+      plugin:  document.getElementById('step-plugin'),
       start:   document.getElementById('step-start'),
       ready:   document.getElementById('step-ready'),
     };
@@ -257,7 +262,7 @@
     }
     // 失败后点击重试：先清空所有失败/完成态，再通知主进程重跑 setup
     function resetSplash() {
-      ['node', 'install', 'start', 'ready'].forEach(id => {
+      ['node', 'install', 'plugin', 'start', 'ready'].forEach(id => {
         const el = els[id];
         if (!el) return;
         el.classList.remove('active', 'done', 'error');

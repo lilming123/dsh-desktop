@@ -5,14 +5,28 @@
   },
   "steps": {
     "node": {
-      "checking": "检查 Node.js",
-      "notFound": "未找到 Node.js，请从 nodejs.org 安装后重启。"
+      "checking": "正在装配运行时",
+      "notFound": "未找到 Node.js，请从 nodejs.org 安装后重启。",
+      "systemFound": "已复用系统 Node {{version}} ✓",
+      "bundling": "正在准备内置 Node {{version}}…",
+      "downloading": "下载 Node 运行时… {{pct}}%",
+      "extracting": "解压 Node 运行时…",
+      "bundledReady": "内置 Node {{version}} ✓",
+      "provisionFailed": "运行时装配失败"
     },
     "install": {
       "checking": "检查 @deepseek-ai/dsh",
       "installing": "正在安装 @deepseek-ai/dsh…",
       "installed": "@deepseek-ai/dsh  ✓ 已安装",
       "ready": "@deepseek-ai/dsh  ✓"
+    },
+    "plugin": {
+      "checking": "检查 dsh-api 插件",
+      "installed": "dsh-api  ✓",
+      "installingFromGithub": "正在从 GitHub 安装 dsh-api…",
+      "installedFromGithub": "dsh-api  ✓ 已从 GitHub 安装",
+      "usingBundled": "dsh-api  ✓（使用内置副本）",
+      "bothFailed": "dsh-api 安装失败：{{error}}"
     },
     "start": {
       "starting": "正在启动服务…",
@@ -25,12 +39,22 @@
       "opening": "正在打开界面"
     }
   },
+  "upstream": {
+    "checking": "正在检查更新…",
+    "upToDate": "已是最新版 DSH（{{version}}）。",
+    "upgraded": "已后台下载 DSH {{version}}，将在下次启动时自动生效。",
+    "noNetwork": "无法访问更新源，请检查网络后重试。",
+    "failed": "更新检查失败：{{error}}",
+    "throttled": "近期已检查过，最新已知版本：{{version}}。",
+    "title": "DSH 更新"
+  },
   "errors": {
     "setupFailed": "启动失败",
     "tryAgain": "重试"
   },
   "menu": {
     "file": "文件",
+    "newWorkspace": "新建工作区…",
     "openFolder": "打开文件夹作为工作区…",
     "openRecent": "打开最近的工作区",
     "noRecent": "暂无最近工作区",
@@ -42,9 +66,34 @@
     "showWindow": "显示窗口",
     "openInBrowser": "在浏览器中打开 dsh",
     "pluginRepo": "dsh-api 插件 GitHub 仓库",
+    "checkUpdate": "检查更新…",
+    "reinstallApiPlugin": "重新安装 dsh-api 插件",
     "edit": "编辑",
     "view": "视图",
     "window": "窗口",
     "help": "帮助"
+  },
+  "notify": {
+    "taskDone": {
+      "title": "任务已完成",
+      "body": "{{title}} — Agent 已回到空闲"
+    },
+    "approval": {
+      "title": "需要你的确认",
+      "body": "{{summary}}"
+    }
+  },
+  "plugin": {
+    "title": "dsh-api 插件",
+    "installedMessage": "已从 GitHub 安装 dsh-api。",
+    "reinstalledMessage": "已从 GitHub 重新安装 dsh-api。",
+    "restartHint": "更新后的插件将在下次重启桌面 App 时生效。",
+    "installFailedMessage": "无法安装 dsh-api：{{error}}\n\n仍在使用内置副本。"
+  },
+  "banner": {
+    "reconnecting": "正在重连 dsh…",
+    "lost": "dsh 连接已断开，请重启以恢复。",
+    "retry": "重试",
+    "restart": "重启 dsh"
   }
 }

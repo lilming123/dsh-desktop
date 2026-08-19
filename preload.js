@@ -13,6 +13,11 @@
  *   onLangChange(cb)  ← 'lang-changed'  — language switched in the shell
  *   onI18n(cb)        ← 'i18n-dict'     — full dictionary push (on dom-ready + switch)
  *   retry()           → 'retry'         — user hit "Try Again" on the splash
+ *
+ * Also exposes `window.__dshShellBridge` for the connection-status banner
+ * we inject into dsh's page (see `src/mainWindowBanner.js`). That bridge
+ * forwards banner state pushes to a global the injected script attaches
+ * itself to, and exposes tiny `restart()` / `retry()` senders.
  */
 
 'use strict';
@@ -45,3 +50,39 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onI18n:       queueChannel('i18n-dict'),
   retry:        () => ipcRenderer.send('retry'),
 });
+
+// Banner bridge: the injected page script (see mainWindowBanner.js) reads
+// `window.__dshShellBanner.apply` and calls this bridge for actions. We
+// route state pushes here and forward them; page-side buffering handles the
+// (very brief) race between dom-ready and the main-process state push that
+// follows it.
+{
+  const BANNER_STATE = 'dsh-shell:banner-state';
+  const BANNER_RESTART = 'dsh-shell:banner-restart';
+  const BANNER_RETRY = 'dsh-shell:banner-retry';
+
+  let queued = [];
+  ipcRenderer.on(BANNER_STATE, (_e, payload) => {
+    const applier = typeof window.__dshShellBanner?.apply === 'function'
+      ? window.__dshShellBanner.apply
+      : null;
+    if (applier) {
+      try { applier(payload); } catch { /* ignore */ }
+    } else {
+      // Injected script hasn't registered its applier yet — queue for it.
+      queued.push(payload);
+    }
+  });
+
+  contextBridge.exposeInMainWorld('__dshShellBridge', {
+    /** Drains any state frames received before the injected applier was ready. */
+    flushQueued() {
+      const applier = window.__dshShellBanner?.apply;
+      if (typeof applier !== 'function') return;
+      const pending = queued; queued = [];
+      for (const p of pending) { try { applier(p); } catch { /* ignore */ } }
+    },
+    restart: () => ipcRenderer.send(BANNER_RESTART),
+    retry:   () => ipcRenderer.send(BANNER_RETRY),
+  });
+}

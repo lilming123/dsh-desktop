@@ -5,14 +5,28 @@
   },
   "steps": {
     "node": {
-      "checking": "Checking Node.js",
-      "notFound": "Node.js not found. Install from nodejs.org then restart."
+      "checking": "Provisioning runtime",
+      "notFound": "Node.js not found. Install from nodejs.org then restart.",
+      "systemFound": "System Node {{version}} ✓",
+      "bundling": "Preparing bundled Node {{version}}…",
+      "downloading": "Downloading Node runtime… {{pct}}%",
+      "extracting": "Extracting Node runtime…",
+      "bundledReady": "Bundled Node {{version}} ✓",
+      "provisionFailed": "Runtime provisioning failed"
     },
     "install": {
       "checking": "Checking @deepseek-ai/dsh",
       "installing": "Installing @deepseek-ai/dsh…",
       "installed": "@deepseek-ai/dsh  ✓ installed",
       "ready": "@deepseek-ai/dsh  ✓"
+    },
+    "plugin": {
+      "checking": "Checking dsh-api plugin",
+      "installed": "dsh-api  ✓",
+      "installingFromGithub": "Installing dsh-api from GitHub…",
+      "installedFromGithub": "dsh-api  ✓ installed",
+      "usingBundled": "dsh-api  ✓ (offline copy)",
+      "bothFailed": "dsh-api install failed: {{error}}"
     },
     "start": {
       "starting": "Starting server…",
@@ -25,12 +39,22 @@
       "opening": "Opening UI"
     }
   },
+  "upstream": {
+    "checking": "Checking for updates…",
+    "upToDate": "You're on the latest DSH version ({{version}}).",
+    "upgraded": "DSH {{version}} downloaded — it will activate on the next launch.",
+    "noNetwork": "Could not reach the update registry. Check your network and try again.",
+    "failed": "Update check failed: {{error}}",
+    "throttled": "Already checked recently. Latest known: {{version}}.",
+    "title": "DSH Updates"
+  },
   "errors": {
     "setupFailed": "Setup failed",
     "tryAgain": "Try Again"
   },
   "menu": {
     "file": "File",
+    "newWorkspace": "New Workspace…",
     "openFolder": "Open Folder as Workspace…",
     "openRecent": "Open Recent",
     "noRecent": "No recent workspaces",
@@ -42,9 +66,34 @@
     "showWindow": "Show Window",
     "openInBrowser": "Open dsh in Browser",
     "pluginRepo": "dsh-api Plugin on GitHub",
+    "checkUpdate": "Check for Updates…",
+    "reinstallApiPlugin": "Reinstall dsh-api Plugin",
     "edit": "Edit",
     "view": "View",
     "window": "Window",
     "help": "Help"
+  },
+  "notify": {
+    "taskDone": {
+      "title": "Task complete",
+      "body": "{{title}} — the agent is idle"
+    },
+    "approval": {
+      "title": "Approval needed",
+      "body": "{{summary}}"
+    }
+  },
+  "plugin": {
+    "title": "dsh-api Plugin",
+    "installedMessage": "dsh-api installed from GitHub.",
+    "reinstalledMessage": "dsh-api reinstalled from GitHub.",
+    "restartHint": "The updated plugin will be active the next time the desktop app is restarted.",
+    "installFailedMessage": "Could not install dsh-api: {{error}}\n\nThe bundled fallback copy is still in use."
+  },
+  "banner": {
+    "reconnecting": "Reconnecting to dsh…",
+    "lost": "dsh connection lost. Restart to recover.",
+    "retry": "Retry",
+    "restart": "Restart dsh"
   }
 }

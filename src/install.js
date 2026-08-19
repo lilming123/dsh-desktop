@@ -11,7 +11,7 @@
 const fs = require('fs');
 const { spawn } = require('child_process');
 const { npxBin } = require('./paths');
-const { buildEnv } = require('./dsh');
+const { buildEnv, getRuntime } = require('./dsh');
 const { homePath, writeTextAtomic } = require('./fsx');
 const { log } = require('./logger');
 
@@ -53,8 +53,12 @@ function ensureInstalled() {
       log('dsh already installed (marker + cache)');
       return resolve();
     }
-    log('dsh not installed, running `npx --yes @deepseek-ai/dsh --version`…');
-    const proc = spawn(npxBin(), ['--yes', '@deepseek-ai/dsh', '--version'], {
+    // Prefer the runtime we just provisioned; fall back to the legacy
+    // heuristic if setup.js hasn't populated the runtime for some reason.
+    const rt = getRuntime();
+    const npx = rt ? rt.npxPath : npxBin();
+    log('dsh not installed, running', npx, '--yes @deepseek-ai/dsh --version …');
+    const proc = spawn(npx, ['--yes', '@deepseek-ai/dsh', '--version'], {
       stdio: ['ignore', 'pipe', 'pipe'],
       env: buildEnv(),
       shell: false,
