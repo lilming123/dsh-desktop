@@ -30,6 +30,7 @@ const { openEventStream } = require('./src/apiClient');
 const notifier = require('./src/notifier');
 const { createMonitor } = require('./src/connectionMonitor');
 const banner = require('./src/mainWindowBanner');
+const externalLinks = require('./src/externalLinks');
 
 let splashWin = null;
 let mainWin   = null;
@@ -38,6 +39,7 @@ let eventStream = null;   // dispose fn for the SSE subscription
 let notifierApi = null;   // { handleEvent, dispose }
 let monitor = null;       // connection state machine
 let bannerApi = null;     // { refreshLocale, dispose }
+let externalLinksApi = null; // { dispose }
 let currentPort = null;   // port the current pipeline is subscribed to
 let restarting = false;   // guards concurrent Restart-button clicks
 
@@ -132,6 +134,16 @@ function createMain(port) {
   });
   capabilities.setContext({ mainWin });
 
+  // Route http(s) links pointed at any host other than the current dsh
+  // instance to the OS default browser, so clicking a docs / repo / social
+  // link doesn't navigate our shell away from dsh. Installed BEFORE
+  // loadURL so the very first navigation is already guarded. getDshPort
+  // reads the module-scoped currentPort so workspace switches and dsh
+  // restarts are picked up automatically without re-installing.
+  externalLinksApi = externalLinks.install(mainWin.webContents, {
+    getDshPort: () => currentPort ?? port,
+  });
+
   mainWin.loadURL(url);
   mainWin.once('ready-to-show', () => {
     splashWin?.close();
@@ -154,6 +166,8 @@ function createMain(port) {
     startEventPipeline(port);
   });
   mainWin.on('closed', () => {
+    try { externalLinksApi?.dispose(); } catch (_) { /* ignore */ }
+    externalLinksApi = null;
     mainWin = null;
     capabilities.setContext({ mainWin: null });
   });
