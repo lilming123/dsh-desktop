@@ -145,6 +145,32 @@ async function workspaceCurrent(timeoutMs = 1000) {
   };
 }
 
+/**
+ * POST `/dsh-api/workspace/create` — register a workspace-registry entry
+ * for `path`. Returns the parsed workspace descriptor on success (with
+ * `{ id, path, title, createdAt }`), or an `{ ok: false, error }` object
+ * describing what the plugin reported (bad path, dsh registry rejection,
+ * plugin unavailable). Never throws.
+ *
+ * NOTE: this only writes the registry; switching dsh's cwd to the new
+ * workspace still requires a separate call — the desktop's own
+ * capabilities.openWorkspaceRequested() drives that via the companion.
+ */
+async function createWorkspace(path, title, timeoutMs = 4000) {
+  if (typeof path !== 'string' || path.length === 0) {
+    return { ok: false, error: 'path (non-empty string) is required' };
+  }
+  const body = { path };
+  if (typeof title === 'string' && title.length > 0) body.title = title;
+  const r = await request('POST', '/dsh-api/workspace/create', body, timeoutMs);
+  if (!r) return { ok: false, error: 'plugin unavailable' };
+  if (r.body && r.body.ok === true && r.body.workspace) {
+    return { ok: true, workspace: r.body.workspace };
+  }
+  const err = (r.body && typeof r.body.error === 'string') ? r.body.error : `http ${r.status}`;
+  return { ok: false, error: err };
+}
+
 module.exports = {
   // Port wiring (single-caller contract with capabilities.setContext)
   setPort,
@@ -160,4 +186,5 @@ module.exports = {
   // Workspace
   listWorkspaces,
   workspaceCurrent,
+  createWorkspace,
 };

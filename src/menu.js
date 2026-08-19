@@ -29,10 +29,12 @@
 
 'use strict';
 
-const { app, Menu, shell } = require('electron');
+const { app, Menu, shell, dialog } = require('electron');
 const { t, getLang, getSupportedLangs, getLangLabels } = require('./i18n');
 const capabilities = require('./capabilities');
 const pluginClient = require('./pluginClient');
+const { checkUpstreamNow } = require('./upstream');
+const { getRuntime, installApiPluginFromGitHub, detectInstalledApiPlugin } = require('./dsh');
 const { log } = require('./logger');
 
 // ── Async-data cache (survives rebuilds; refreshed on every buildMenu call) ──
@@ -129,6 +131,11 @@ function fileMenu(recentSubmenu, workspaceTip) {
     toolTip: workspaceTip,
     submenu: [
       {
+        label: t('menu.newWorkspace'),
+        accelerator: 'CmdOrCtrl+Shift+N',
+        click: () => { capabilities.newWorkspaceDialog(); },
+      },
+      {
         label: t('menu.openFolder'),
         accelerator: 'CmdOrCtrl+Shift+O',
         toolTip: workspaceTip,
@@ -195,8 +202,95 @@ function helpMenu() {
         label: t('menu.pluginRepo'),
         click: () => { shell.openExternal('https://github.com/lilming123/dsh-api').catch(() => {}); },
       },
+      { type: 'separator' },
+      {
+        label: t('menu.checkUpdate'),
+        click: () => { runManualUpdateCheck().catch(e => log('manual update check failed:', e && e.message)); },
+      },
+      {
+        label: t('menu.reinstallApiPlugin'),
+        click: () => { runManualApiPluginReinstall().catch(e => log('manual api-plugin reinstall failed:', e && e.message)); },
+      },
     ],
   };
+}
+
+/**
+ * Menu-triggered upstream check. Runs `checkUpstreamNow({ force: true })`
+ * off the current runtime's npx binary and shows a small dialog with the
+ * outcome. Never throws; every failure is turned into a user-visible message.
+ */
+async function runManualUpdateCheck() {
+  const rt = getRuntime();
+  const env = process.env;
+  const npxPath = rt ? rt.npxPath : undefined;
+  const title = t('upstream.title');
+
+  const result = await checkUpstreamNow({ npxPath, env, force: true });
+  let message;
+  switch (result.status) {
+    case 'up-to-date':
+      message = t('upstream.upToDate', { version: result.latest });
+      break;
+    case 'upgraded':
+      message = t('upstream.upgraded', { version: result.latest });
+      break;
+    case 'no-network':
+      message = t('upstream.noNetwork');
+      break;
+    case 'skipped-throttled':
+      // A forced manual check should never return throttled, but guard anyway.
+      message = t('upstream.throttled', { version: result.latest || '—' });
+      break;
+    case 'failed':
+    default:
+      message = t('upstream.failed', { error: result.error || 'unknown' });
+      break;
+  }
+  await dialog.showMessageBox({
+    type: result.status === 'failed' || result.status === 'no-network' ? 'warning' : 'info',
+    title,
+    message,
+    buttons: ['OK'],
+    noLink: true,
+  }).catch(() => { /* dialog dismissed */ });
+}
+
+/**
+ * Menu-triggered dsh-api reinstall. Runs `dsh plugin --profile web add
+ * github:lilming123/dsh-api` and reports the outcome in a dialog. Meant
+ * as a manual fallback for the automatic install in the startup pipeline
+ * (splash Step 3): if the automatic install fell back to the bundled
+ * copy — or if the user wants to pull a newer upstream commit — they can
+ * trigger it here without editing files or restarting.
+ *
+ * The freshly installed plugin only becomes active on the next dsh spawn,
+ * so the dialog explicitly mentions that a restart is required.
+ */
+async function runManualApiPluginReinstall() {
+  const title = t('plugin.title');
+  const wasInstalled = !!detectInstalledApiPlugin();
+  const result = await installApiPluginFromGitHub();
+
+  let message;
+  let level = 'info';
+  if (result.ok) {
+    message = wasInstalled
+      ? t('plugin.reinstalledMessage')
+      : t('plugin.installedMessage');
+    message += '\n\n' + t('plugin.restartHint');
+  } else {
+    level = 'warning';
+    message = t('plugin.installFailedMessage', { error: result.error || 'unknown' });
+  }
+
+  await dialog.showMessageBox({
+    type: level,
+    title,
+    message,
+    buttons: ['OK'],
+    noLink: true,
+  }).catch(() => { /* dialog dismissed */ });
 }
 
 module.exports = { buildMenu };

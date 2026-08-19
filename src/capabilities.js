@@ -148,6 +148,39 @@ async function openWorkspaceRequested(dir) {
   return openWorkspaceAt(dir);
 }
 
+/**
+ * "New Workspace…" menu action: pick a directory, register it in dsh's
+ * workspace registry via the plugin, then hand off to `openWorkspaceAt` so
+ * dsh restarts against that cwd.
+ *
+ * Failure modes are surfaced explicitly:
+ *   - user cancels                → { ok:false, canceled:true }
+ *   - plugin unreachable          → { ok:false, error:'dsh-api plugin unavailable' }
+ *   - registry rejects the path   → { ok:false, error:<message from plugin> }
+ *
+ * If the registry accepts the path but the ensuing workspace switch fails,
+ * we still leave the entry registered — the user can open it again from
+ * "Open Recent" without repeating the picker. This mirrors how
+ * `openWorkspaceDialog` handles switch failures today.
+ */
+async function newWorkspaceDialog() {
+  if (!state.mainWin) return { ok: false, error: 'no main window' };
+  const { canceled, filePaths } = await dialog.showOpenDialog(state.mainWin, {
+    title: t('menu.newWorkspace'),
+    properties: ['openDirectory', 'createDirectory'],
+  });
+  if (canceled || !filePaths.length) return { ok: false, canceled: true };
+
+  const dir = filePaths[0];
+  const created = await pluginClient.createWorkspace(dir);
+  if (!created.ok) {
+    log('capabilities: workspace/create rejected:', created.error);
+    return { ok: false, error: created.error };
+  }
+  log('capabilities: workspace created', created.workspace);
+  return openWorkspaceAt(dir);
+}
+
 // ── Files / input injection ──────────────────────────────────────────────────
 
 /**
@@ -251,6 +284,7 @@ module.exports = {
   openWorkspaceAt,
   openWorkspaceDialog,
   openWorkspaceRequested,
+  newWorkspaceDialog,
   // Files
   pasteToInput,
   pickFilesAndInject,
